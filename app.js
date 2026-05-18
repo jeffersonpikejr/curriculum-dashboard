@@ -1,0 +1,2008 @@
+// ============================================================================
+// app.js — Application logic, rendering, state, events
+//
+// Loaded after data.js. All curriculum data is read from globals defined in
+// data.js (T, BOOK_PROGRESS, SYNTOPIC_CLUSTERS, weekKey, etc.).
+//
+// State (sessions, page progress, leverage log, completed deliverables)
+// persists to browser localStorage under STORAGE_KEY.
+// Use the Data button in the action bar to export/import state as JSON.
+// ============================================================================
+
+'use strict';
+
+// ── STATE & PERSISTENCE ──
+let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3 };
+const DETAIL_DESC = {1:"Topics only",2:"+ Sub-topic bars",3:"+ Current resource",4:"+ Deliverables",5:"+ Week-by-week"};
+
+const STORAGE_KEY = 'curriculum_v4_state';
+const GIST_DESCRIPTION = 'Curriculum Dashboard State (do not delete)';
+const SYNC_DEBOUNCE_MS = 2000;
+
+// Persistent state: book progress, completed deliverables, session log, leverage log, custom end dates
+const DEFAULT_PERSISTENT = {
+  bookProgress: {},
+  bookEndOverrides: {},
+  bookCompleted: {},
+  deliverablesDone: {},
+  sessions: [],
+  leverageLog: [],
+  customNotes: {},
+  sync: {
+    token: null,        // GitHub PAT with gist scope
+    gistId: null,       // ID of the curriculum gist
+    lastPushAt: null,   // ms timestamp of last successful push
+    lastPullAt: null,
+    lastError: null,    // last error message, if any
+    status: 'idle',     // 'idle' | 'syncing' | 'error'
+  },
+};
+
+let P = loadPersistent();
+
+function loadPersistent() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return cloneDefault();
+    const parsed = JSON.parse(raw);
+    const merged = {...cloneDefault(), ...parsed};
+    if (!merged.bookProgress || typeof merged.bookProgress !== 'object') merged.bookProgress = {};
+    if (!merged.bookEndOverrides || typeof merged.bookEndOverrides !== 'object') merged.bookEndOverrides = {};
+    if (!merged.bookCompleted || typeof merged.bookCompleted !== 'object') merged.bookCompleted = {};
+    if (!merged.deliverablesDone || typeof merged.deliverablesDone !== 'object') merged.deliverablesDone = {};
+    if (!Array.isArray(merged.sessions)) merged.sessions = [];
+    if (!Array.isArray(merged.leverageLog)) merged.leverageLog = [];
+    if (!merged.customNotes || typeof merged.customNotes !== 'object') merged.customNotes = {};
+    if (!merged.sync || typeof merged.sync !== 'object') merged.sync = cloneDefault().sync;
+    return merged;
+  } catch (e) {
+    console.warn("Failed to load state:", e);
+    return cloneDefault();
+  }
+}
+
+function cloneDefault() {
+  return JSON.parse(JSON.stringify(DEFAULT_PERSISTENT));
+}
+
+function savePersistent() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(P));
+    scheduleAutoSync();
+  } catch (e) {
+    console.warn("Failed to save state:", e);
+  }
+}
+
+// Same as savePersistent but skips auto-sync — used by sync internals to avoid recursion
+function savePersistentLocalOnly() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(P));
+  } catch (e) {
+    console.warn("Failed to save state:", e);
+  }
+}
+
+function getCurrentPage(bookKey) {
+  if (P.bookProgress[bookKey] !== undefined) return P.bookProgress[bookKey];
+  return BOOK_PROGRESS[bookKey] ? BOOK_PROGRESS[bookKey].currentPage : 0;
+}
+
+function getEndWeek(bookKey) {
+  if (P.bookEndOverrides[bookKey]) return P.bookEndOverrides[bookKey];
+  return BOOK_PROGRESS[bookKey] ? BOOK_PROGRESS[bookKey].endWeek : null;
+}
+
+function isBookComplete(bookKey) {
+  return P.bookCompleted[bookKey] === true;
+}
+
+function deliverableKey(topicId, subLetter, weekId) {
+  return `${topicId}-${subLetter}-${weekId}`;
+}
+
+function isDeliverableDone(topicId, subLetter, weekId) {
+  return P.deliverablesDone[deliverableKey(topicId, subLetter, weekId)] === true;
+}
+
+function toggleDeliverable(topicId, subLetter, weekId) {
+  const k = deliverableKey(topicId, subLetter, weekId);
+  if (P.deliverablesDone[k]) delete P.deliverablesDone[k];
+  else P.deliverablesDone[k] = true;
+  savePersistent();
+}
+
+// ── SESSION LOGGING ──
+function logSession(bookKey, pagesRead, durationMin, notes) {
+  const ts = Date.now();
+  const pages = Math.max(0, +pagesRead || 0);
+  const dur = Math.max(0, +durationMin || 0);
+  const safeBookKey = (bookKey && BOOK_PROGRESS[bookKey]) ? bookKey : '';
+  P.sessions.push({ ts, bookKey: safeBookKey, pagesRead: pages, durationMin: dur, notes: notes || '' });
+  if (safeBookKey && pages > 0) {
+    const book = BOOK_PROGRESS[safeBookKey];
+    const cur = getCurrentPage(safeBookKey);
+    const total = book.totalPages || 999;
+    const newPage = Math.min(total, cur + pages);
+    P.bookProgress[safeBookKey] = newPage;
+    if (newPage >= total) {
+      P.bookCompleted[safeBookKey] = true;
+    }
+  }
+  savePersistent();
+}
+
+function deleteSession(idx) {
+  const session = P.sessions[idx];
+  if (session && session.bookKey && session.pagesRead) {
+    const cur = getCurrentPage(session.bookKey);
+    P.bookProgress[session.bookKey] = Math.max(0, cur - session.pagesRead);
+    if (P.bookCompleted[session.bookKey] && P.bookProgress[session.bookKey] < (BOOK_PROGRESS[session.bookKey]?.totalPages || 0)) {
+      delete P.bookCompleted[session.bookKey];
+    }
+  }
+  P.sessions.splice(idx, 1);
+  savePersistent();
+}
+
+function addLeverageEntry(text) {
+  if (!text || !text.trim()) return;
+  const today = new Date().toISOString().slice(0, 10);
+  P.leverageLog.unshift({ date: today, text: text.trim() });
+  savePersistent();
+}
+
+// ── STATS ──
+function getSessionsInRange(daysBack) {
+  const cutoff = Date.now() - daysBack * 86400000;
+  return P.sessions.filter(s => s.ts >= cutoff);
+}
+
+function getStreakDays() {
+  if (P.sessions.length === 0) return 0;
+  const dayKeys = new Set(P.sessions.map(s => new Date(s.ts).toISOString().slice(0,10)));
+  let streak = 0;
+  let d = new Date();
+  while (true) {
+    const k = d.toISOString().slice(0,10);
+    if (dayKeys.has(k)) {
+      streak++;
+      d.setDate(d.getDate() - 1);
+    } else {
+      // Allow one-day gap from today (haven't logged yet today)
+      if (streak === 0) {
+        d.setDate(d.getDate() - 1);
+        const k2 = d.toISOString().slice(0,10);
+        if (dayKeys.has(k2)) continue;
+      }
+      break;
+    }
+  }
+  return streak;
+}
+
+function getPagesByDay(daysBack) {
+  const result = {};
+  const cutoff = Date.now() - daysBack * 86400000;
+  P.sessions.forEach(s => {
+    if (s.ts < cutoff) return;
+    const k = new Date(s.ts).toISOString().slice(0,10);
+    result[k] = (result[k] || 0) + (s.pagesRead || 0);
+  });
+  return result;
+}
+
+// ── EXPORT / IMPORT ──
+function exportState() {
+  const data = JSON.stringify(P, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `curriculum-state-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('State exported');
+}
+
+function importState(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      const preservedSync = P.sync;
+      P = {...cloneDefault(), ...parsed, sync: preservedSync};
+      savePersistent();
+      render();
+      toast('State imported');
+    } catch (err) {
+      toast('Invalid file', true);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function resetState() {
+  if (!confirm('Reset all progress, sessions, and notes? This cannot be undone.')) return;
+  const preservedSync = P.sync; // don't nuke sync config on reset
+  P = {...cloneDefault(), sync: preservedSync};
+  savePersistent();
+  render();
+  toast('State reset');
+}
+
+// ── GITHUB GIST SYNC ──
+//
+// Mirrors P (minus the sync config itself) to a private gist on the user's
+// GitHub account. Push is auto-debounced 2s after any state change.
+// Pull is manual or on connect.
+//
+// Token is stored in localStorage (per-device). User can paste the same PAT
+// on another device to sync.
+
+let _syncDebounce = null;
+
+function syncEnabled() {
+  return !!(P.sync && P.sync.token);
+}
+
+function scheduleAutoSync() {
+  if (!syncEnabled()) return;
+  clearTimeout(_syncDebounce);
+  _syncDebounce = setTimeout(() => { pushToGist().catch(() => {}); }, SYNC_DEBOUNCE_MS);
+}
+
+async function gistFetch(url, opts = {}) {
+  if (!P.sync?.token) throw new Error('Not connected');
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      'Authorization': `token ${P.sync.token}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Invalid token (401) — regenerate PAT with gist scope');
+    if (res.status === 404) throw new Error('Gist not found (404) — may have been deleted');
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function findExistingGist() {
+  // GitHub returns up to 30 per page; the curriculum gist will be near the top
+  // unless the user has many gists. Check first 100.
+  for (let page = 1; page <= 4; page++) {
+    const list = await gistFetch(`https://api.github.com/gists?per_page=30&page=${page}`);
+    const match = list.find(g => g.description === GIST_DESCRIPTION);
+    if (match) return match.id;
+    if (list.length < 30) break;
+  }
+  return null;
+}
+
+function statePayload() {
+  // Strip sync config — each device manages its own connection
+  const {sync, ...rest} = P;
+  return rest;
+}
+
+async function pushToGist() {
+  if (!syncEnabled()) return;
+  P.sync.status = 'syncing';
+  P.sync.lastError = null;
+  updateSyncBadge();
+  try {
+    const content = JSON.stringify(statePayload(), null, 2);
+    let result;
+    if (P.sync.gistId) {
+      // Update existing
+      result = await gistFetch(`https://api.github.com/gists/${P.sync.gistId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          description: GIST_DESCRIPTION,
+          files: { 'state.json': { content } },
+        }),
+      });
+    } else {
+      // Create new
+      result = await gistFetch('https://api.github.com/gists', {
+        method: 'POST',
+        body: JSON.stringify({
+          description: GIST_DESCRIPTION,
+          public: false,
+          files: { 'state.json': { content } },
+        }),
+      });
+      P.sync.gistId = result.id;
+    }
+    P.sync.lastPushAt = Date.now();
+    P.sync.status = 'idle';
+    savePersistentLocalOnly();
+    updateSyncBadge();
+  } catch (e) {
+    P.sync.status = 'error';
+    P.sync.lastError = e.message;
+    savePersistentLocalOnly();
+    updateSyncBadge();
+    throw e;
+  }
+}
+
+async function pullFromGist() {
+  if (!syncEnabled()) return;
+  if (!P.sync.gistId) {
+    const found = await findExistingGist();
+    if (found) P.sync.gistId = found;
+    else throw new Error('No gist found — push first to create one');
+  }
+  P.sync.status = 'syncing';
+  P.sync.lastError = null;
+  updateSyncBadge();
+  try {
+    const data = await gistFetch(`https://api.github.com/gists/${P.sync.gistId}`);
+    const file = data.files && data.files['state.json'];
+    if (!file) throw new Error('Gist missing state.json');
+    let content = file.content;
+    if (file.truncated && file.raw_url) {
+      const raw = await fetch(file.raw_url);
+      content = await raw.text();
+    }
+    const remote = JSON.parse(content);
+    const preservedSync = P.sync;
+    P = {...cloneDefault(), ...remote, sync: preservedSync};
+    P.sync.lastPullAt = Date.now();
+    P.sync.status = 'idle';
+    savePersistentLocalOnly();
+    render();
+    toast('Pulled latest state');
+  } catch (e) {
+    P.sync.status = 'error';
+    P.sync.lastError = e.message;
+    savePersistentLocalOnly();
+    updateSyncBadge();
+    throw e;
+  }
+}
+
+async function connectSync(token) {
+  if (!token || !token.trim()) {
+    toast('Token is empty', true);
+    return;
+  }
+  P.sync = {
+    token: token.trim(),
+    gistId: null,
+    lastPushAt: null,
+    lastPullAt: null,
+    lastError: null,
+    status: 'syncing',
+  };
+  savePersistentLocalOnly();
+  updateSyncBadge();
+  try {
+    // Look for an existing curriculum gist on this account
+    const existingId = await findExistingGist();
+    if (existingId) {
+      P.sync.gistId = existingId;
+      savePersistentLocalOnly();
+      await pullFromGist();
+      toast('Connected — pulled existing state');
+    } else {
+      // No gist yet — create one with current local state
+      await pushToGist();
+      toast('Connected — created new gist');
+    }
+    render();
+  } catch (e) {
+    P.sync.status = 'error';
+    P.sync.lastError = e.message;
+    savePersistentLocalOnly();
+    toast('Sync failed: ' + e.message, true);
+    render();
+  }
+}
+
+function disconnectSync() {
+  P.sync = cloneDefault().sync;
+  savePersistentLocalOnly();
+  toast('Disconnected from GitHub');
+  render();
+}
+
+function updateSyncBadge() {
+  const el = document.getElementById('sync-badge');
+  if (!el) return;
+  el.textContent = syncBadgeText();
+  el.className = 'sync-badge ' + syncBadgeClass();
+}
+
+function syncBadgeText() {
+  if (!syncEnabled()) return 'Local only';
+  if (P.sync.status === 'syncing') return 'Syncing…';
+  if (P.sync.status === 'error') return 'Sync error';
+  if (P.sync.lastPushAt) {
+    const secs = Math.floor((Date.now() - P.sync.lastPushAt) / 1000);
+    if (secs < 60) return `Synced ${secs}s ago`;
+    if (secs < 3600) return `Synced ${Math.floor(secs/60)}m ago`;
+    return `Synced ${Math.floor(secs/3600)}h ago`;
+  }
+  return 'Synced';
+}
+
+function syncBadgeClass() {
+  if (!syncEnabled()) return 'local';
+  if (P.sync.status === 'syncing') return 'syncing';
+  if (P.sync.status === 'error') return 'error';
+  return 'ok';
+}
+
+// ── MODAL ──
+let modalState = null;
+
+function openModal(type, context) {
+  modalState = { type, context };
+  render();
+}
+
+function closeModal() {
+  modalState = null;
+  render();
+}
+
+// ── TOAST ──
+function toast(msg, isError) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  if (isError) el.style.background = 'var(--accent-bad)';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2000);
+}
+
+// ── SESSION TIMER ──
+let timerState = { running: false, paused: false, startTs: 0, elapsedSec: 0, pausedAt: 0 };
+let timerInterval = null;
+
+function startTimer() {
+  if (timerState.running) return;
+  timerState.running = true;
+  timerState.paused = false;
+  timerState.startTs = Date.now() - timerState.elapsedSec * 1000;
+  timerInterval = setInterval(updateTimerDisplay, 1000);
+  updateTimerDisplay();
+}
+function pauseTimer() {
+  if (!timerState.running) return;
+  timerState.paused = !timerState.paused;
+  if (timerState.paused) {
+    clearInterval(timerInterval);
+    timerState.elapsedSec = Math.floor((Date.now() - timerState.startTs) / 1000);
+  } else {
+    timerState.startTs = Date.now() - timerState.elapsedSec * 1000;
+    timerInterval = setInterval(updateTimerDisplay, 1000);
+  }
+  updateTimerDisplay();
+}
+function resetTimer() {
+  clearInterval(timerInterval);
+  timerState = { running: false, paused: false, startTs: 0, elapsedSec: 0, pausedAt: 0 };
+  updateTimerDisplay();
+}
+function updateTimerDisplay() {
+  const el = document.getElementById('timer-display');
+  if (!el) return;
+  let sec;
+  if (timerState.running && !timerState.paused) {
+    sec = Math.floor((Date.now() - timerState.startTs) / 1000);
+    timerState.elapsedSec = sec;
+  } else {
+    sec = timerState.elapsedSec;
+  }
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  el.textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  el.className = 'timer-display ' + (timerState.paused ? 'paused' : (timerState.running ? 'running' : ''));
+}
+
+// ── RENDER ──
+function render() {
+  try {
+    const a = document.getElementById("app");
+    a.innerHTML = `
+      <div class="header">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:0;">
+            <h1>Personal Learning Curriculum <span class="today-badge">May 17, 2026 · W3 of May</span></h1>
+            <div class="sub">Obsidian + Anki + morning block · 10 topics · syntopic clusters where applicable</div>
+          </div>
+          <button id="sync-badge" class="sync-badge ${syncBadgeClass()}" data-modal="sync" title="Click to manage GitHub sync">${syncBadgeText()}</button>
+        </div>
+        <div class="action-bar" style="margin-top:12px;margin-bottom:0;">
+          <span class="action-bar-label">Quick Actions</span>
+          <button class="btn btn-primary" data-modal="log-session">+ Log Session</button>
+          <button class="btn" data-modal="leverage">+ Leverage Note</button>
+          <button class="btn" data-modal="timer">⏱ Timer</button>
+          <span style="flex:1;"></span>
+          <button class="btn btn-ghost btn-small" data-modal="sync">Sync</button>
+          <button class="btn btn-ghost btn-small" data-modal="data">Data</button>
+        </div>
+      </div>
+      <div class="tabs">
+        <button class="tab ${S.tab==='this-week'?'active':''}" data-tab="this-week">This Week</button>
+        <button class="tab ${S.tab==='timeline'?'active':''}" data-tab="timeline">Timeline</button>
+        <button class="tab ${S.tab==='log'?'active':''}" data-tab="log">Log</button>
+        ${T.map(t=>`<button class="tab ${S.tab==='t'+t.id?'active':''}" data-tab="t${t.id}"><span class="dot" style="background:${t.color}"></span>#${t.id}</button>`).join("")}
+      </div>
+      <div id="content"></div>
+      ${modalState ? renderModal() : ''}
+    `;
+
+    const content = document.getElementById("content");
+    if (S.tab === 'this-week') content.innerHTML = renderThisWeek();
+    else if (S.tab === 'timeline') content.innerHTML = renderTimeline();
+    else if (S.tab === 'log') content.innerHTML = renderLog();
+    else {
+      const topic = T.find(t => 't'+t.id === S.tab);
+      if (topic) content.innerHTML = renderTopicPanel(topic);
+    }
+
+    bind();
+  } catch (e) {
+    console.error("Render error:", e);
+    document.getElementById("app").innerHTML = `<div style="padding:20px;color:#ef4444;font-family:monospace;">Render error: ${e.message}</div>`;
+  }
+}
+
+// ── ACTIVITY ROLL (heuristic random selection) ──
+//
+// Scores each active book on four signals and weighted-random picks from
+// the top 3. Designed to feel like dice while still nudging toward
+// syntopic batching and weekly goal completion.
+function suggestRandomActivity() {
+  const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k, b]) => {
+    if (isBookComplete(k)) return false;
+    if (!b.startWeek || !b.endWeek) return false;
+    try {
+      const [sm, sw] = b.startWeek.split('-W').map(Number);
+      const [em, ew] = getEndWeek(k).split('-W').map(Number);
+      if ([sm, sw, em, ew].some(isNaN)) return false;
+      const sIdx = sm * 4 + sw;
+      const eIdx = em * 4 + ew;
+      const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+      return cIdx >= sIdx && cIdx <= eIdx;
+    } catch { return false; }
+  });
+
+  if (activeBooks.length === 0) return null;
+
+  const now = Date.now();
+  const HOUR = 60 * 60 * 1000;
+  const last4h = P.sessions.filter(s => now - s.ts < 4 * HOUR);
+  const last48h = P.sessions.filter(s => now - s.ts < 48 * HOUR);
+  // Most recent session within 48h — drives syntopic batching
+  const recent = last48h.length
+    ? last48h.reduce((a, b) => a.ts > b.ts ? a : b)
+    : null;
+  const recentBook = recent ? BOOK_PROGRESS[recent.bookKey] : null;
+  const recentTopic = recentBook ? recentBook.topic : null;
+
+  const scored = activeBooks.map(([k, b]) => {
+    let score = 0;
+    const reasons = [];
+
+    // Pacing math
+    const cur = getCurrentPage(k);
+    let weeklyTarget = 0;
+    let wkRem = 1;
+    try {
+      const [em, ew] = getEndWeek(k).split('-W').map(Number);
+      const endIdx = em * 4 + ew;
+      const curIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+      wkRem = Math.max(1, endIdx - curIdx + 1);
+      weeklyTarget = Math.ceil(Math.max(0, b.totalPages - cur) / wkRem);
+    } catch {}
+
+    const pagesThisWeek = P.sessions
+      .filter(s => s.bookKey === k && (now - s.ts) < 7 * 24 * HOUR)
+      .reduce((sum, s) => sum + (s.pagesRead || 0), 0);
+    const gap = Math.max(0, weeklyTarget - pagesThisWeek);
+    const gapRatio = weeklyTarget > 0 ? Math.min(1, gap / weeklyTarget) : 0;
+
+    // 1. Weekly target deficit (0-50)
+    score += gapRatio * 50;
+    if (gap > 0) reasons.push(`${gap} pp short of weekly target (${weeklyTarget})`);
+    else if (weeklyTarget > 0 && pagesThisWeek > 0) reasons.push(`On pace this week`);
+
+    // 2. Syntopic batch — same topic as recent session (0 or 30)
+    if (recentTopic != null && b.topic === recentTopic && recent.bookKey !== k) {
+      score += 30;
+      const topic = T.find(t => t.id === b.topic);
+      reasons.push(`Syntopic batch — same topic as recent (#${b.topic}${topic ? ' ' + topic.title.split(' ')[0] : ''})`);
+    }
+
+    // 3. Schedule pressure (0-20) — closer deadline = higher
+    const pressureScore = Math.max(0, (8 - wkRem)) * 2.5;
+    score += pressureScore;
+    if (wkRem <= 2) reasons.push(`${wkRem} week${wkRem === 1 ? '' : 's'} to deadline`);
+
+    // 4. Recency penalty — read in last 4 hours (-20)
+    if (last4h.some(s => s.bookKey === k)) {
+      score -= 20;
+      reasons.push(`Just read — encouraging variety`);
+    }
+
+    // 5. Random jitter (0-15) — keeps dice feeling like dice
+    score += Math.random() * 15;
+
+    return { key: k, book: b, score, reasons, weeklyTarget, pagesThisWeek, gap, wkRem };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  // Weighted random over top 3
+  const topN = scored.slice(0, Math.min(3, scored.length));
+  const totalScore = topN.reduce((s, x) => s + Math.max(1, x.score), 0);
+  let pick = Math.random() * totalScore;
+  for (const cand of topN) {
+    pick -= Math.max(1, cand.score);
+    if (pick <= 0) return cand;
+  }
+  return topN[topN.length - 1];
+}
+
+// ── THIS WEEK ──
+function renderThisWeek() {
+  const currentTasks = [];
+  T.forEach(t => {
+    (t.subs || []).forEach(s => {
+      (s.weeks||[]).forEach(w => {
+        if (w.wk === CURRENT_WEEK_KEY) {
+          currentTasks.push({topic: t, sub: s, week: w});
+        }
+      });
+    });
+  });
+
+  // Reading progress for current week
+  const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
+    if (isBookComplete(k)) return false;
+    if (!b.startWeek || !b.endWeek) return false;
+    const endWeek = getEndWeek(k);
+    try {
+      const [sm,sw] = b.startWeek.split('-W').map(Number);
+      const [em,ew] = endWeek.split('-W').map(Number);
+      if ([sm,sw,em,ew].some(isNaN)) return false;
+      const sIdx = sm * 4 + sw;
+      const eIdx = em * 4 + ew;
+      const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+      return cIdx >= sIdx && cIdx <= eIdx;
+    } catch { return false; }
+  });
+
+  // Upcoming books (start within next 4 weeks)
+  const upcomingBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
+    if (isBookComplete(k)) return false;
+    if (!b.startWeek) return false;
+    try {
+      const [sm,sw] = b.startWeek.split('-W').map(Number);
+      const sIdx = sm * 4 + sw;
+      const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+      return sIdx > cIdx && sIdx <= cIdx + 4;
+    } catch { return false; }
+  });
+
+  // Stats
+  const last7 = getSessionsInRange(7);
+  const last30 = getSessionsInRange(30);
+  const pagesThisWeek = last7.reduce((sum,s) => sum + (s.pagesRead || 0), 0);
+  const minThisWeek = last7.reduce((sum,s) => sum + (s.durationMin || 0), 0);
+  const sessionsThisWeek = last7.length;
+  const streak = getStreakDays();
+
+  // Weekly target total
+  const weeklyTarget = activeBooks.reduce((sum, [k,b]) => {
+    const cur = getCurrentPage(k);
+    const endWeek = getEndWeek(k);
+    try {
+      const [em,ew] = endWeek.split('-W').map(Number);
+      const endIdx = em * 4 + ew;
+      const curIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+      const weeksRem = Math.max(1, endIdx - curIdx + 1);
+      return sum + Math.ceil(Math.max(0, b.totalPages - cur) / weeksRem);
+    } catch { return sum; }
+  }, 0);
+
+  // Load assessment
+  let loadLabel, loadClass;
+  if (weeklyTarget < 80) { loadLabel = 'LIGHT'; loadClass = 'on-track'; }
+  else if (weeklyTarget < 140) { loadLabel = 'MODERATE'; loadClass = 'on-track'; }
+  else if (weeklyTarget < 180) { loadLabel = 'HEAVY'; loadClass = 'behind'; }
+  else { loadLabel = 'OVERLOAD ⚠'; loadClass = 'behind'; }
+
+  // Suggestion — uses the SAME per-week target metric as the book progress card
+  // for consistency. Books with no remaining-page deficit show "on pace" rather
+  // than picking a "behind" book.
+  let suggestion = null;
+  let mostBehindWeeklyGap = 0;
+  activeBooks.forEach(([k,b]) => {
+    const cur = getCurrentPage(k);
+    const endWeek = getEndWeek(k);
+    try {
+      const [em,ew] = endWeek.split('-W').map(Number);
+      const [sm,sw] = b.startWeek.split('-W').map(Number);
+      if ([em,ew,sm,sw].some(isNaN)) return;
+      const endIdx = em * 4 + ew;
+      const startIdx = sm * 4 + sw;
+      const curIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+      if (curIdx < startIdx) return; // not started yet
+      const remaining = Math.max(0, b.totalPages - cur);
+      const weeksRemaining = Math.max(1, endIdx - curIdx + 1);
+      const pagesPerWeek = Math.ceil(remaining / weeksRemaining);
+      // Pages logged this week for THIS book
+      const pagesThisWeekForBook = getSessionsInRange(7)
+        .filter(s => s.bookKey === k)
+        .reduce((sum,s) => sum + (s.pagesRead || 0), 0);
+      const weeklyGap = Math.max(0, pagesPerWeek - pagesThisWeekForBook);
+      if (weeklyGap > mostBehindWeeklyGap) {
+        mostBehindWeeklyGap = weeklyGap;
+        suggestion = { key: k, book: b, currentPage: cur, pagesPerWeek, pagesThisWeekForBook, weeklyGap };
+      }
+    } catch {}
+  });
+  if (!suggestion && activeBooks.length > 0) {
+    // No deficit — suggest the book with most pages remaining
+    const best = activeBooks.reduce((bestEntry, curr) => {
+      const remCur = curr[1].totalPages - getCurrentPage(curr[0]);
+      const remBest = bestEntry[1].totalPages - getCurrentPage(bestEntry[0]);
+      return remCur > remBest ? curr : bestEntry;
+    });
+    const [k,b] = best;
+    const cur = getCurrentPage(k);
+    try {
+      const [em,ew] = getEndWeek(k).split('-W').map(Number);
+      const endIdx = em*4+ew;
+      const curIdx = CURRENT_MONTH_IDX*4+CURRENT_WEEK_OF_MONTH;
+      const weeksRemaining = Math.max(1, endIdx - curIdx + 1);
+      const pagesPerWeek = Math.ceil(Math.max(0, b.totalPages - cur) / weeksRemaining);
+      suggestion = { key: k, book: b, currentPage: cur, pagesPerWeek, pagesThisWeekForBook: 0, weeklyGap: 0 };
+    } catch {}
+  }
+
+  return `
+    <div class="dice-row">
+      <button class="dice-button" data-modal="roll" title="Roll for a study activity">
+        <span class="dice-face">🎲</span>
+        <span class="dice-text">Roll for activity</span>
+      </button>
+    </div>
+    ${suggestion ? `
+      <div class="suggestion-card">
+        <div class="suggestion-label">▶ Read Now</div>
+        <div class="suggestion-title">${escapeHtml(suggestion.book.title)} — p.${suggestion.currentPage + 1}</div>
+        <div class="suggestion-detail">
+          Weekly target: <strong>${suggestion.pagesPerWeek} pp</strong>${suggestion.pagesThisWeekForBook > 0 ? ` · logged this week: ${suggestion.pagesThisWeekForBook} pp` : ''}${suggestion.weeklyGap > 0 ? ` · <span style="color:var(--accent-warn);">${suggestion.weeklyGap} pp short</span>` : ' · on pace'}
+        </div>
+        <button class="btn btn-primary btn-small" data-modal="log-session" data-book="${suggestion.key}">+ Log Session for This</button>
+      </div>
+    ` : ''}
+
+    <div class="stats-strip">
+      <div class="stat-card">
+        <div class="stat-label">Streak</div>
+        <div class="stat-value">${streak}<span style="font-size:12px;color:var(--text-muted);font-weight:400;"> days</span></div>
+        <div class="stat-sub">consecutive study days</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Pages · 7d</div>
+        <div class="stat-value">${pagesThisWeek}<span style="font-size:11px;color:var(--text-muted);font-weight:400;"> / ~${weeklyTarget}</span></div>
+        <div class="stat-sub">target this week · <span class="rp-pace ${loadClass}" style="padding:1px 5px;font-size:9px;">${loadLabel}</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Sessions · 7d</div>
+        <div class="stat-value">${sessionsThisWeek}</div>
+        <div class="stat-sub">${minThisWeek} min total</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Books Active</div>
+        <div class="stat-value">${activeBooks.length}</div>
+        <div class="stat-sub">${Object.keys(P.bookCompleted).length} completed · ${upcomingBooks.length} upcoming</div>
+      </div>
+    </div>
+
+    <div class="streak-wrap">
+      <div class="streak-head">
+        <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Last 35 Days</div>
+        <div style="font-size:10px;color:var(--text-muted);font-family:'DM Mono',monospace;">${last30.reduce((s,x)=>s+(x.pagesRead||0),0)} pages logged</div>
+      </div>
+      ${renderStreakGrid()}
+    </div>
+
+    <div class="week-banner">
+      <div class="wb-label">▎ This Week's Focus</div>
+      <div style="font-size:14px;line-height:1.5;color:var(--text-primary);">
+        ${currentTasks.length === 0 ? 'No tasks scheduled this week — review timeline or log catch-up sessions.' : `${currentTasks.length} active sub-topic tasks this week.`}
+      </div>
+      <div class="wb-grid">
+        ${currentTasks.map(ct => {
+          const done = isDeliverableDone(ct.topic.id, ct.sub.l, ct.week.wk);
+          return `
+          <div class="wb-item" style="border-left:3px solid ${ct.topic.color};${done?'opacity:0.6;':''}">
+            <div class="wb-topic" style="color:${ct.topic.color};">#${ct.topic.id} · ${ct.sub.l}) ${escapeHtml(ct.sub.n)}</div>
+            <div class="wb-task">${escapeHtml(ct.week.focus)}</div>
+            <div class="wb-meta">${escapeHtml(ct.week.res)}${ct.week.pages && ct.week.pages!=='—' ? ' · ' + escapeHtml(ct.week.pages) : ''}</div>
+            <label class="deliverable-check ${done?'done':''}" style="margin-top:6px;">
+              <input type="checkbox" ${done?'checked':''} data-deliverable="${ct.topic.id}|${ct.sub.l}|${ct.week.wk}">
+              ${escapeHtml(ct.week.del)}
+            </label>
+          </div>
+        `;}).join('')}
+      </div>
+    </div>
+
+    <div class="sec-title">Active Reading — This Week's Pace</div>
+    ${activeBooks.length === 0 ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px;border:1px dashed var(--border);border-radius:6px;">No active books this week. ${upcomingBooks.length ? 'See upcoming books below.' : ''}</div>` : activeBooks.map(([k,b]) => renderBookProgress(k, b)).join('')}
+
+    ${upcomingBooks.length > 0 ? `
+      <div class="sec-title">Upcoming — Starts in Next 4 Weeks</div>
+      ${upcomingBooks.map(([k,b]) => renderBookProgress(k, b)).join('')}
+    ` : ''}
+
+    <div class="sec-title">Syntopic Reading Clusters — Active</div>
+    ${getActiveClusters().map(({c, color}) => renderCluster(c, color)).join('')}
+  `;
+}
+
+function getActiveClusters() {
+  // Smarter active-cluster detection based on current month
+  const monthName = MF[CURRENT_MONTH_IDX];
+  const result = [];
+  Object.entries(SYNTOPIC_CLUSTERS).forEach(([tid, clusters]) => {
+    const topic = T.find(t => t.id === +tid);
+    const color = topic ? topic.color : 'var(--text-muted)';
+    clusters.forEach(c => {
+      if (!c.span) return;
+      // Match span string against next 2 months
+      const nextMonths = [MF[CURRENT_MONTH_IDX], MF[CURRENT_MONTH_IDX+1] || '', MF[CURRENT_MONTH_IDX+2] || ''];
+      if (nextMonths.some(m => m && c.span.includes(m))) {
+        result.push({c, color});
+      }
+    });
+  });
+  return result;
+}
+
+function renderStreakGrid() {
+  const pagesByDay = getPagesByDay(35);
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  let cells = '';
+  for (let i = 34; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const k = d.toISOString().slice(0,10);
+    const pages = pagesByDay[k] || 0;
+    let level = '';
+    if (pages > 0) {
+      if (pages < 5) level = 'l1';
+      else if (pages < 15) level = 'l2';
+      else if (pages < 30) level = 'l3';
+      else level = 'l4';
+    }
+    const isToday = i === 0;
+    cells += `<div class="streak-cell ${level} ${isToday?'today':''}" title="${k}: ${pages} pp"></div>`;
+  }
+  return `<div class="streak-grid">${cells}</div>`;
+}
+
+function renderBookProgress(bookKey, book) {
+  // Defensive guards
+  if (!book || !bookKey) return '';
+  const totalPages = Math.max(1, book.totalPages || 1);
+  const currentPage = Math.max(0, Math.min(totalPages, getCurrentPage(bookKey)));
+  const endWeek = getEndWeek(bookKey) || book.endWeek;
+  const startWeek = book.startWeek;
+
+  // Parse weeks safely
+  let endIdx, startIdx;
+  try {
+    const [em,ew] = endWeek.split('-W').map(Number);
+    const [sm,sw] = startWeek.split('-W').map(Number);
+    if (isNaN(em)||isNaN(ew)||isNaN(sm)||isNaN(sw)) throw new Error('bad week');
+    endIdx = em * 4 + ew;
+    startIdx = sm * 4 + sw;
+  } catch (e) {
+    return `<div class="reading-progress">⚠ Invalid scheduling for ${escapeHtml(book.title || bookKey)}</div>`;
+  }
+
+  const isComplete = isBookComplete(bookKey);
+  const pct = (currentPage / totalPages * 100);
+  const remaining = Math.max(0, totalPages - currentPage);
+
+  const curIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+  const weeksRemaining = Math.max(1, endIdx - curIdx + 1);
+  const pagesPerWeek = Math.ceil(remaining / weeksRemaining);
+
+  const totalWeeks = Math.max(1, endIdx - startIdx + 1);
+  const weeksElapsed = curIdx - startIdx + 1;
+  const expectedPage = Math.round((weeksElapsed / totalWeeks) * totalPages);
+  const hasStarted = weeksElapsed >= 1;
+
+  let paceLabel, paceClass;
+  if (isComplete) {
+    paceLabel = 'COMPLETE ✓';
+    paceClass = 'ahead';
+  } else if (!hasStarted) {
+    paceLabel = 'UPCOMING';
+    paceClass = 'on-track';
+  } else if (currentPage === 0 && weeksElapsed <= 1) {
+    paceLabel = 'STARTING';
+    paceClass = 'on-track';
+  } else if (currentPage >= expectedPage - 5) {
+    paceLabel = currentPage > expectedPage + 10 ? 'AHEAD' : 'ON TRACK';
+    paceClass = currentPage > expectedPage + 10 ? 'ahead' : 'on-track';
+  } else {
+    const behind = expectedPage - currentPage;
+    paceLabel = `${behind} PG BEHIND`;
+    paceClass = 'behind';
+  }
+
+  const topicColor = `var(--t${book.topic || 2})`;
+  const scheduleLabel = hasStarted ? `Active · ends ${weekLabel(endWeek)}` : `Starts ${weekLabel(startWeek)}`;
+
+  const goalText = isComplete ? 'Done — pick the next book.'
+    : !hasStarted ? `Begins ${weekLabel(startWeek)} (${diffWeeks(curIdx, startIdx)} weeks from now)`
+    : `read ~${pagesPerWeek} pages (${remaining} pp over ${weeksRemaining} weeks)`;
+
+  const priorityNote = book.priorityChapters && book.priorityChapters.length ? `
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg-card);border-radius:4px;border-left:2px solid ${topicColor};">
+      <details>
+        <summary style="cursor:pointer;font-size:10px;font-family:'DM Mono',monospace;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.06em;">
+          Priority cut · ${book.priorityChapters.length} ch · ${book.priorityTotalPages || totalPages} pp${book.skipChapters ? ` · ${book.skipChapters.length} skipped` : ''}
+        </summary>
+        <div style="margin-top:6px;display:flex;flex-direction:column;gap:3px;">
+          ${book.priorityChapters.map(c => `
+            <div style="display:flex;justify-content:space-between;gap:8px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text-secondary);">
+              <span>Ch.${c.ch} ${escapeHtml(c.name)}</span>
+              <span style="color:var(--text-muted);">pp.${escapeHtml(c.pages)} · ${c.count}</span>
+            </div>
+          `).join('')}
+          ${book.secondaryChapters && book.secondaryChapters.length ? `
+            <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);font-size:9px;font-family:'DM Mono',monospace;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;">Optional / deferred</div>
+            ${book.secondaryChapters.map(c => `
+              <div style="display:flex;justify-content:space-between;gap:8px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text-dim);">
+                <span>Ch.${c.ch} ${escapeHtml(c.name)}</span>
+                <span>pp.${escapeHtml(c.pages)} · ${c.count}</span>
+              </div>
+            `).join('')}
+          ` : ''}
+        </div>
+      </details>
+    </div>
+  ` : '';
+
+  return `
+    <div class="reading-progress" style="border-left:3px solid ${topicColor};${isComplete?'opacity:0.7;':''}">
+      <div class="rp-head">
+        <div>
+          <div class="rp-title">${escapeHtml(book.title)}</div>
+          <div class="rp-author">${escapeHtml(book.author || '')}${book.note ? ' · ' + escapeHtml(book.note) : ''}</div>
+          <div style="font-size:9px;font-family:'DM Mono',monospace;color:var(--text-muted);margin-top:2px;">${scheduleLabel}</div>
+        </div>
+        <div class="rp-stats">${currentPage} / ${totalPages} pp</div>
+      </div>
+      <div class="rp-bar"><div class="rp-bar-fill" style="width:${pct}%;background:${topicColor};"></div></div>
+      <div class="rp-week-goal" title="Weekly target = remaining pages ÷ weeks remaining until target end date. Edit the book to push the end date if pace shifts.">
+        <span><strong>This week:</strong> ${goalText}</span>
+        <span class="rp-pace ${paceClass}">${paceLabel}</span>
+      </div>
+      ${priorityNote}
+      <div class="rp-actions">
+        ${!isComplete ? `<button class="btn btn-small btn-primary" data-modal="log-session" data-book="${bookKey}">+ Log Pages</button>` : ''}
+        <button class="btn btn-small" data-modal="edit-book" data-book="${bookKey}">Edit</button>
+        ${!isComplete ? `<button class="btn btn-small btn-ghost" data-mark-complete="${bookKey}">Mark Done</button>` : `<button class="btn btn-small btn-ghost" data-mark-incomplete="${bookKey}">Reopen</button>`}
+      </div>
+    </div>
+  `;
+}
+
+function weekLabel(wk) {
+  if (!wk) return '—';
+  try {
+    const [m,w] = wk.split('-W').map(Number);
+    if (isNaN(m)||isNaN(w)||m<0||m>=MF.length) return wk;
+    return `${MF[m]} ${MY[m]} W${w}`;
+  } catch { return wk; }
+}
+
+function diffWeeks(curIdx, targetIdx) {
+  return Math.max(0, targetIdx - curIdx);
+}
+
+function renderCluster(cluster, color) {
+  return `
+    <div class="cluster-box" style="border-left:3px solid ${color};">
+      <div class="cluster-title" style="color:${color};">${cluster.title}</div>
+      <div class="cluster-desc">${cluster.desc} <span style="color:var(--text-dim);">· ${cluster.span}</span></div>
+      <div class="cluster-items">
+        ${cluster.items.map(i => `
+          <div class="cluster-item">
+            <span class="cluster-item-title">${i.title}</span>
+            <span class="cluster-item-meta">${i.meta}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ── TIMELINE ──
+function renderTimeline() {
+  return `
+    <div class="controls">
+      <div class="control-group"><span class="control-label">Zoom</span><div class="toggle-group">
+        <button class="toggle-btn ${S.zoom==='monthly'?'active':''}" data-z="monthly">Month</button>
+        <button class="toggle-btn ${S.zoom==='weekly'?'active':''}" data-z="weekly">Week</button>
+      </div></div>
+      <div class="control-group"><span class="control-label">Focus</span><div class="toggle-group">
+        ${["all","1","2","3","4"].map(v=>`<button class="toggle-btn ${S.tier===v?'active':''}" data-f="${v}">${v==='all'?'All':TIER[v]}</button>`).join("")}
+      </div></div>
+      <div class="control-group"><span class="control-label">Detail</span>
+        <div class="toggle-group">
+          ${[1,2,3,4,5].map(v=>`<button class="toggle-btn ${S.detail===v?'active':''}" data-detail="${v}" title="${DETAIL_DESC[v]}">${v}</button>`).join("")}
+        </div>
+        <span class="detail-desc">${DETAIL_DESC[S.detail]}</span>
+      </div>
+    </div>
+    ${gantt()}
+  `;
+}
+
+function gantt() {
+  const fT = S.tier==='all' ? T : T.filter(t=>String(tierOf(t.id))===S.tier);
+  if (S.zoom === 'weekly') return weeklyGantt(fT);
+  return monthlyGantt(fT);
+}
+
+function monthlyGantt(fT) {
+  try {
+    const extraCols = [];
+    if (S.detail >= 2) extraCols.push({label:'Sub'});
+    if (S.detail >= 3) extraCols.push({label:'Resource'});
+    if (S.detail >= 4) extraCols.push({label:'Deliverable'});
+
+    const yrCols = `<th class="yr" colspan="8">2026</th><th class="yr" colspan="6">2027</th>`;
+    let yrRow = `<tr><th class="g-label" style="z-index:3;"></th>${extraCols.map(()=>'<th></th>').join('')}${yrCols}</tr>`;
+    let hdRow = `<tr><th class="g-label" style="z-index:3;">Topic</th>${extraCols.map(c=>`<th class="g-label">${c.label}</th>`).join('')}`;
+    for (let i = 0; i < 14; i++) hdRow += `<th class="g-cell ${i===CURRENT_MONTH_IDX?'g-today':''}">${ML[i]||'?'}</th>`;
+    hdRow += '</tr>';
+
+    let bodyRows = '';
+    fT.forEach(t => {
+      if (!t || !Array.isArray(t.subs) || t.subs.length === 0) return;
+      const subs = t.subs;
+      const tTitle = escapeHtml(t.title || '');
+      const tMo = Array.isArray(t.mo) ? t.mo : [];
+
+      if (S.detail === 1) {
+        let row = `<tr><td class="g-label topic" data-tab="t${t.id}" style="z-index:2;">
+          <span style="color:${t.color};margin-right:4px;font-family:'DM Mono',monospace;">${t.id}</span>${tTitle}</td>`;
+        for (let m = 0; m < 14; m++) {
+          const act = tMo.includes(m);
+          row += `<td class="g-cell ${m===CURRENT_MONTH_IDX?'g-today':''}">${act?`<div class="g-bar" style="background:${t.color}"></div>`:''}</td>`;
+        }
+        bodyRows += row + '</tr>';
+      } else if (S.detail <= 4) {
+        subs.forEach((s, si) => {
+          if (!s) return;
+          const sMo = Array.isArray(s.mo) ? s.mo : [];
+          bodyRows += '<tr>';
+          if (si === 0) {
+            bodyRows += `<td class="g-label topic" rowspan="${subs.length}" data-tab="t${t.id}" style="z-index:2;">
+              <span style="color:${t.color};margin-right:4px;font-family:'DM Mono',monospace;">${t.id}</span>${tTitle}</td>`;
+          }
+          bodyRows += `<td class="g-label sub">${escapeHtml(s.l||'')}) ${escapeHtml(s.n||'')}</td>`;
+          if (S.detail >= 3) {
+            bodyRows += `<td class="g-label sub">${escapeHtml(truncate(getCurrentResource(s), 40))}</td>`;
+          }
+          if (S.detail >= 4) {
+            bodyRows += `<td class="g-label sub">${escapeHtml(truncate(getCurrentDeliverable(s), 35))}</td>`;
+          }
+          for (let m = 0; m < 14; m++) {
+            const act = sMo.includes(m);
+            bodyRows += `<td class="g-cell ${m===CURRENT_MONTH_IDX?'g-today':''}">${act?`<div class="g-bar" style="background:${t.color}"></div>`:''}</td>`;
+          }
+          bodyRows += '</tr>';
+        });
+      } else {
+        // Level 5: sub-topic header rows + individual week rows
+        // Compute total rows precisely
+        let totalRows = 0;
+        subs.forEach(s => {
+          if (!s) return;
+          const weeks = Array.isArray(s.weeks) ? s.weeks : [];
+          totalRows += 1 + weeks.length;
+        });
+        if (totalRows === 0) return;
+
+        let topicCellAdded = false;
+        subs.forEach((s, si) => {
+          if (!s) return;
+          const sMo = Array.isArray(s.mo) ? s.mo : [];
+          const weeks = Array.isArray(s.weeks) ? s.weeks : [];
+
+          // Sub-topic header row
+          bodyRows += '<tr>';
+          if (!topicCellAdded) {
+            bodyRows += `<td class="g-label topic" rowspan="${totalRows}" data-tab="t${t.id}" style="z-index:2;">
+              <span style="color:${t.color};margin-right:4px;font-family:'DM Mono',monospace;">${t.id}</span>${tTitle}</td>`;
+            topicCellAdded = true;
+          }
+          bodyRows += `<td class="g-label sub" style="font-weight:600;color:${t.color};">${escapeHtml(s.l||'')}) ${escapeHtml(s.n||'')}</td>`;
+          bodyRows += `<td class="g-label sub" style="font-style:italic;font-size:10px;">${escapeHtml(s.f||'')}</td>`;
+          const moStart = sMo.length ? (MF[sMo[0]] || '?') : '?';
+          const moEnd = sMo.length ? (MF[sMo[sMo.length-1]] || '?') : '?';
+          bodyRows += `<td class="g-label sub" style="font-size:9px;font-family:'DM Mono',monospace;color:var(--text-muted);">${moStart} – ${moEnd}</td>`;
+          for (let m = 0; m < 14; m++) {
+            const act = sMo.includes(m);
+            bodyRows += `<td class="g-cell ${m===CURRENT_MONTH_IDX?'g-today':''}">${act?`<div class="g-bar" style="background:${t.color}"></div>`:''}</td>`;
+          }
+          bodyRows += '</tr>';
+
+          // Individual week rows
+          weeks.forEach(wk => {
+            if (!wk || !wk.wk) return;
+            const isCurrent = wk.wk === CURRENT_WEEK_KEY;
+            let wkMonth;
+            try {
+              wkMonth = +wk.wk.split('-W')[0];
+              if (isNaN(wkMonth)) wkMonth = -1;
+            } catch { wkMonth = -1; }
+
+            bodyRows += `<tr style="${isCurrent ? 'background:rgba(16,185,129,0.05);' : ''}">`;
+            bodyRows += `<td class="g-label sub" style="padding-left:28px!important;font-family:'DM Mono',monospace;font-size:9px;color:${isCurrent?'var(--accent-good)':'var(--text-dim)'};">${escapeHtml(wk.w||'')}${isCurrent ? ' ◀' : ''}</td>`;
+            bodyRows += `<td class="g-label sub" style="font-size:10px;">${escapeHtml(truncate(wk.res||'', 40))}</td>`;
+            bodyRows += `<td class="g-label sub" style="font-size:10px;">${escapeHtml(truncate(wk.del||'', 35))}</td>`;
+            for (let m = 0; m < 14; m++) {
+              const act = m === wkMonth;
+              bodyRows += `<td class="g-cell ${m===CURRENT_MONTH_IDX?'g-today':''}">${act?`<div class="g-bar" style="background:${t.color};height:6px;opacity:0.5;"></div>`:''}</td>`;
+            }
+            bodyRows += '</tr>';
+          });
+        });
+      }
+    });
+
+    return `<div class="gantt-wrap"><table class="gantt"><thead>${yrRow}${hdRow}</thead><tbody>${bodyRows}</tbody></table></div>`;
+  } catch (e) {
+    console.error('monthlyGantt error:', e);
+    return `<div style="padding:16px;color:var(--accent-bad);font-family:monospace;font-size:11px;">Timeline render error at detail level ${S.detail}: ${escapeHtml(e.message)}. <button class="btn btn-small" onclick="S.detail=Math.max(1,S.detail-1);render()">Reduce Detail</button></div>`;
+  }
+}
+
+function weeklyGantt(fT) {
+  try {
+    // 6 months × 4 weeks = 24 columns
+    let weeks = [];
+    for (let m = 0; m < 6; m++) for (let w = 1; w <= 4; w++) weeks.push({m, w});
+
+    const extraCols = [];
+    if (S.detail >= 2) extraCols.push('Sub');
+    if (S.detail >= 3) extraCols.push('Resource');
+    if (S.detail >= 4) extraCols.push('Deliverable');
+
+    let monthCounts = {};
+    weeks.forEach(w => { monthCounts[w.m] = (monthCounts[w.m] || 0) + 1; });
+
+    let mRow = `<tr><th class="g-label" style="z-index:3;"></th>${extraCols.map(()=>'<th></th>').join('')}`;
+    Object.keys(monthCounts).forEach(m => {
+      mRow += `<th class="yr" colspan="${monthCounts[m]}">${MF[m]||'?'} ${MY[m]||''}</th>`;
+    });
+    mRow += '</tr>';
+
+    let wRow = `<tr><th class="g-label" style="z-index:3;">Topic</th>${extraCols.map(c=>`<th class="g-label">${c}</th>`).join('')}`;
+    weeks.forEach(w => {
+      const isCur = w.m === CURRENT_MONTH_IDX && w.w === CURRENT_WEEK_OF_MONTH;
+      wRow += `<th class="g-cell ${isCur?'g-today':''}" style="min-width:24px;font-size:8px;">W${w.w}</th>`;
+    });
+    wRow += '</tr>';
+
+    let bodyRows = '';
+    fT.forEach(t => {
+      if (!t || !Array.isArray(t.subs) || t.subs.length === 0) return;
+      const tTitle = escapeHtml(t.title || '');
+      const tMo = Array.isArray(t.mo) ? t.mo : [];
+
+      if (S.detail === 1) {
+        bodyRows += `<tr><td class="g-label topic" data-tab="t${t.id}" style="z-index:2;"><span style="color:${t.color};margin-right:4px;font-family:'DM Mono',monospace;">${t.id}</span>${tTitle}</td>`;
+        weeks.forEach(w => {
+          const act = tMo.includes(w.m);
+          const isCur = w.m === CURRENT_MONTH_IDX && w.w === CURRENT_WEEK_OF_MONTH;
+          bodyRows += `<td class="g-cell ${isCur?'g-today':''}">${act?`<div class="g-bar" style="background:${t.color};height:10px;"></div>`:''}</td>`;
+        });
+        bodyRows += '</tr>';
+      } else {
+        t.subs.forEach((s, si) => {
+          if (!s) return;
+          const sMo = Array.isArray(s.mo) ? s.mo : [];
+          const sWeeks = Array.isArray(s.weeks) ? s.weeks : [];
+          bodyRows += '<tr>';
+          if (si === 0) {
+            bodyRows += `<td class="g-label topic" rowspan="${t.subs.length}" data-tab="t${t.id}" style="z-index:2;"><span style="color:${t.color};margin-right:4px;font-family:'DM Mono',monospace;">${t.id}</span>${tTitle}</td>`;
+          }
+          bodyRows += `<td class="g-label sub">${escapeHtml(s.l||'')}) ${escapeHtml(s.n||'')}</td>`;
+          if (S.detail >= 3) bodyRows += `<td class="g-label sub">${escapeHtml(truncate(getCurrentResource(s), 40))}</td>`;
+          if (S.detail >= 4) bodyRows += `<td class="g-label sub">${escapeHtml(truncate(getCurrentDeliverable(s), 35))}</td>`;
+          weeks.forEach(w => {
+            const act = sMo.includes(w.m);
+            const wkK = weekKey(w.m, w.w);
+            const isThisWk = sWeeks.some(x => x && x.wk === wkK);
+            const isCur = w.m === CURRENT_MONTH_IDX && w.w === CURRENT_WEEK_OF_MONTH;
+            bodyRows += `<td class="g-cell ${isCur?'g-today':''}">${act?`<div class="g-bar" style="background:${t.color};height:${isThisWk?12:8}px;opacity:${isThisWk?0.9:0.4};"></div>`:''}</td>`;
+          });
+          bodyRows += '</tr>';
+        });
+      }
+    });
+
+    return `<div class="gantt-wrap"><table class="gantt"><thead>${mRow}${wRow}</thead><tbody>${bodyRows}</tbody></table></div>`;
+  } catch (e) {
+    console.error('weeklyGantt error:', e);
+    return `<div style="padding:16px;color:var(--accent-bad);font-family:monospace;font-size:11px;">Weekly view error: ${escapeHtml(e.message)}. <button class="btn btn-small" onclick="S.zoom='monthly';render()">Switch to Month View</button></div>`;
+  }
+}
+
+function getCurrentResource(sub) {
+  if (!sub) return '—';
+  const weeks = Array.isArray(sub.weeks) ? sub.weeks : [];
+  const cw = weeks.find(w => w && w.wk === CURRENT_WEEK_KEY);
+  if (cw) return cw.res || '—';
+  const cm = weeks.find(w => w && typeof w.wk === 'string' && w.wk.startsWith(CURRENT_MONTH_IDX + '-'));
+  if (cm) return cm.res || '—';
+  return (weeks[0] && weeks[0].res) ? weeks[0].res : '—';
+}
+
+function getCurrentDeliverable(sub) {
+  if (!sub) return '—';
+  const weeks = Array.isArray(sub.weeks) ? sub.weeks : [];
+  const cw = weeks.find(w => w && w.wk === CURRENT_WEEK_KEY);
+  if (cw) return cw.del || '—';
+  const cm = weeks.find(w => w && typeof w.wk === 'string' && w.wk.startsWith(CURRENT_MONTH_IDX + '-'));
+  if (cm) return cm.del || '—';
+  return (weeks[0] && weeks[0].del) ? weeks[0].del : '—';
+}
+
+function truncate(s, n) {
+  if (s === null || s === undefined) return '';
+  const str = String(s);
+  return str.length > n ? str.slice(0, n) + '…' : str;
+}
+
+// ── TOPIC PANEL ──
+function renderTopicPanel(t) {
+  try {
+    if (!t || !t.id) return `<div style="padding:20px;color:var(--accent-bad);">Topic not found.</div>`;
+    const clusters = SYNTOPIC_CLUSTERS[t.id];
+    const subs = Array.isArray(t.subs) ? t.subs : [];
+    const readings = Array.isArray(t.readings) ? t.readings : [];
+    const tMo = Array.isArray(t.mo) ? t.mo : [];
+
+    return `
+      <div class="topic-head">
+        <div class="topic-num" style="color:${t.color};">${t.id}</div>
+        <div class="topic-meta">
+          <h2>${escapeHtml(t.title || '')}</h2>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:1px;">${escapeHtml(t.scope || '')}</div>
+          <div class="badges">
+            <span class="badge" style="background:${t.bg};color:${t.color};border:1px solid ${t.color}33;">${TIER[tierOf(t.id)] || ''}</span>
+            <span class="badge" style="background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border);">${escapeHtml(t.burn || '')}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <div class="info-box"><div class="lb">Timeframe</div><div class="vl">${escapeHtml(t.tf || '')}</div></div>
+        <div class="info-box"><div class="lb">Active Months</div><div class="vl" style="display:flex;gap:2px;flex-wrap:wrap;">
+          ${ML.map((m,i)=>`<span style="display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:2px;font-size:9px;font-family:'DM Mono',monospace;${tMo.includes(i)?`background:${t.color};color:#fff;`:'background:var(--bg-card);color:var(--text-dim);'}${i===CURRENT_MONTH_IDX?'outline:1px solid var(--accent-good);':''}">${m||'?'}</span>`).join("")}
+        </div></div>
+      </div>
+
+      ${clusters && clusters.length ? `
+        <div class="sec-title" style="color:${t.color}">Syntopic Reading Clusters</div>
+        ${clusters.map(c => renderCluster(c, t.color)).join('')}
+      ` : ''}
+
+      <div class="sec-title" style="color:${t.color}">Sub-Topics & Timeline</div>
+      ${subs.map(s=>{
+        if (!s) return '';
+        const sMo = Array.isArray(s.mo) ? s.mo : [];
+        const startMo = sMo.length ? (MF[sMo[0]] || '?') : '?';
+        const startYr = sMo.length ? (MY[sMo[0]] || '') : '';
+        const endMo = sMo.length > 1 ? (MF[sMo[sMo.length-1]] || '?') : '';
+        const endYr = sMo.length > 1 ? (MY[sMo[sMo.length-1]] || '') : '';
+        return `
+        <div class="sub-item" style="border-left-color:${t.color};">
+          <div class="sub-letter" style="color:${t.color};">${escapeHtml(s.l || '')}</div>
+          <div style="flex:1;">
+            <div class="sub-name">${escapeHtml(s.n || '')}</div>
+            <div class="sub-focus">${escapeHtml(s.f || '')}</div>
+            <div class="sub-timing">${startMo} ${startYr}${sMo.length>1?' – '+endMo+' '+endYr:''}</div>
+          </div>
+        </div>
+      `;}).join("")}
+
+      ${readings.some(r => r.progressKey) ? `
+        <div class="sec-title" style="color:${t.color}">Reading Progress</div>
+        ${readings.filter(r => r.progressKey && BOOK_PROGRESS[r.progressKey]).map(r => renderBookProgress(r.progressKey, BOOK_PROGRESS[r.progressKey])).join('')}
+      ` : ''}
+
+      <div class="sec-title" style="color:${t.color}">Study Plan</div>
+      <div class="plan-wrap">
+      <table class="plan-table">
+        <thead><tr><th style="width:36px;">✓</th><th style="width:90px;">When</th><th style="width:50px;">Sub</th><th>Focus</th><th>Resource</th><th style="width:80px;">Pages</th><th>Deliverable</th></tr></thead>
+        <tbody>
+          ${subs.map(s=>{
+            if (!s) return '';
+            const weeks = Array.isArray(s.weeks) ? s.weeks : [];
+            return weeks.map(w=>{
+              if (!w) return '';
+              const done = isDeliverableDone(t.id, s.l, w.wk);
+              return `
+              <tr class="${w.wk === CURRENT_WEEK_KEY ? 'current-week' : ''}" style="${done?'opacity:0.55;':''}">
+                <td style="text-align:center;"><input type="checkbox" ${done?'checked':''} data-deliverable="${t.id}|${escapeHtml(s.l||'')}|${escapeHtml(w.wk||'')}" style="accent-color:var(--accent-good);cursor:pointer;"></td>
+                <td class="plan-week">${escapeHtml(w.w||'')}${w.wk === CURRENT_WEEK_KEY ? ' ◀' : ''}</td>
+                <td><span class="plan-sub" style="background:${t.bg};color:${t.color};">${escapeHtml(s.l||'')}</span></td>
+                <td class="plan-focus" style="${done?'text-decoration:line-through;':''}">${escapeHtml(w.focus||'')}</td>
+                <td class="plan-resource">${escapeHtml(w.res||'')}</td>
+                <td class="plan-pages">${escapeHtml(w.pages || '—')}</td>
+                <td class="plan-deliverable">${escapeHtml(w.del||'')}</td>
+              </tr>
+            `;}).join("");
+          }).join("")}
+        </tbody>
+      </table>
+      </div>
+
+      <div class="sec-title" style="color:${t.color}">Reading List</div>
+      <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;">
+        ${readings.map((r,i)=>`
+          <div style="display:flex;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);align-items:flex-start;">
+            <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-muted);min-width:20px;padding-top:2px;">${i+1}</div>
+            <div style="flex:1;"><div style="font-weight:500;font-size:13px;">${escapeHtml(r.t||'')}</div><div style="font-size:12px;color:var(--text-secondary);">${escapeHtml(r.a||'')}</div></div>
+            <div style="text-align:right;">
+              <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text-muted);padding:2px 6px;background:var(--bg-card);border-radius:3px;">${escapeHtml(r.type||'')}</div>
+              <div style="font-size:9px;color:var(--text-dim);font-family:'DM Mono',monospace;margin-top:2px;">${escapeHtml(r.when||'')}</div>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+
+      <div class="sec-title" style="color:${t.color}">Practice Method</div>
+      <div class="practice-box" style="border-color:${t.color}33;"><p>${escapeHtml(t.practice || '')}</p></div>
+
+      ${t.notes?`<div class="notes-box" style="border-left-color:${t.color};"><p>${escapeHtml(t.notes)}</p></div>`:''}
+    `;
+  } catch (e) {
+    console.error('renderTopicPanel error:', e);
+    return `<div style="padding:20px;color:var(--accent-bad);font-family:monospace;">Topic panel error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ── LOG TAB ──
+function renderLog() {
+  const sessions = [...P.sessions].sort((a,b) => b.ts - a.ts);
+  const totalPages = sessions.reduce((s,x) => s + (x.pagesRead || 0), 0);
+  const totalMin = sessions.reduce((s,x) => s + (x.durationMin || 0), 0);
+
+  return `
+    <div class="sec-title">Session Log</div>
+    <div class="stats-strip">
+      <div class="stat-card">
+        <div class="stat-label">All-Time Pages</div>
+        <div class="stat-value">${totalPages}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">All-Time Minutes</div>
+        <div class="stat-value">${totalMin}</div>
+        <div class="stat-sub">${Math.round(totalMin/60*10)/10} hours</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Sessions</div>
+        <div class="stat-value">${sessions.length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Current Streak</div>
+        <div class="stat-value">${getStreakDays()}<span style="font-size:12px;color:var(--text-muted);font-weight:400;"> d</span></div>
+      </div>
+    </div>
+
+    <div class="action-bar">
+      <span class="action-bar-label">Sessions</span>
+      <button class="btn btn-primary btn-small" data-modal="log-session">+ New Session</button>
+    </div>
+
+    ${sessions.length === 0 ? `
+      <div style="padding:30px;text-align:center;color:var(--text-muted);font-size:13px;border:1px dashed var(--border);border-radius:6px;">
+        No sessions logged yet. Click "+ Log Session" to track your first study block.
+      </div>
+    ` : sessions.map((s, idx) => {
+      const date = new Date(s.ts);
+      const book = BOOK_PROGRESS[s.bookKey];
+      return `
+        <div class="log-entry">
+          <div class="log-entry-head">
+            <div>
+              <div class="log-entry-book">${book ? book.title : (s.bookKey || 'General study')}</div>
+              <div class="log-entry-meta">${date.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})} · ${s.pagesRead || 0} pp · ${s.durationMin || 0} min</div>
+            </div>
+            <button class="btn btn-small btn-ghost btn-danger" data-delete-session="${P.sessions.indexOf(s)}" title="Delete session">×</button>
+          </div>
+          ${s.notes ? `<div class="log-entry-notes">${escapeHtml(s.notes)}</div>` : ''}
+        </div>
+      `;
+    }).join('')}
+
+    <div class="sec-title" style="margin-top:24px;">Leverage Log</div>
+    <div class="action-bar">
+      <span class="action-bar-label">Daily Insights</span>
+      <button class="btn btn-primary btn-small" data-modal="leverage">+ New Entry</button>
+    </div>
+    ${P.leverageLog.length === 0 ? `
+      <div style="padding:30px;text-align:center;color:var(--text-muted);font-size:13px;border:1px dashed var(--border);border-radius:6px;">
+        No leverage notes yet. Capture one transferable principle per day.
+      </div>
+    ` : P.leverageLog.map((l, idx) => `
+      <div class="leverage-entry">
+        <div class="leverage-date">${l.date}</div>
+        <div class="leverage-text">${escapeHtml(l.text)}</div>
+      </div>
+    `).join('')}
+  `;
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ── MODAL ──
+function renderModal() {
+  if (!modalState) return '';
+  try {
+    const type = modalState.type;
+    let body = '';
+    let title = '';
+    let footer = '';
+
+  if (type === 'log-session') {
+    title = 'Log Study Session';
+    const preselectBook = modalState.context?.book || '';
+    const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k]) => !isBookComplete(k));
+    body = `
+      <div class="form-group">
+        <label class="form-label">Book / Resource</label>
+        <select class="form-select" id="session-book">
+          <option value="">— General / Notes only —</option>
+          ${activeBooks.map(([k,b]) => `<option value="${k}" ${k===preselectBook?'selected':''}>${b.title} (p.${getCurrentPage(k)+1} / ${b.totalPages})</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Pages Read</label>
+          <input type="number" class="form-input" id="session-pages" min="0" placeholder="0">
+          <div class="form-help">Adds to current progress</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Duration (min)</label>
+          <input type="number" class="form-input" id="session-duration" min="0" placeholder="${timerState.elapsedSec ? Math.round(timerState.elapsedSec/60) : ''}">
+          ${timerState.elapsedSec ? `<div class="form-help">Pre-filled from timer (${Math.round(timerState.elapsedSec/60)} min)</div>` : '<div class="form-help">Optional</div>'}
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes</label>
+        <textarea class="form-textarea" id="session-notes" placeholder="Key insight, what to revisit, atomic note seed..."></textarea>
+      </div>
+    `;
+    footer = `
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="save-session">Save Session</button>
+    `;
+  } else if (type === 'roll') {
+    title = '🎲 Activity Roll';
+    // Cache the roll in modal context so re-render doesn't re-pick on every keystroke
+    if (!modalState.context || !modalState.context.rolled) {
+      modalState.context = { ...modalState.context, rolled: suggestRandomActivity() };
+    }
+    const rolled = modalState.context.rolled;
+    if (!rolled) {
+      body = `
+        <div style="padding:30px 20px;text-align:center;color:var(--text-muted);">
+          No active books to roll for right now. Check the Timeline tab or add books via <code style="font-family:'DM Mono',monospace;background:var(--bg-card);padding:2px 6px;border-radius:3px;">data.js</code>.
+        </div>
+      `;
+      footer = `<button class="btn" onclick="closeModal()">Close</button>`;
+    } else {
+      const topic = T.find(t => t.id === rolled.book.topic);
+      const topicColor = topic ? topic.color : 'var(--text-secondary)';
+      body = `
+        <div class="roll-pick" style="border-left:3px solid ${topicColor};">
+          <div class="roll-pick-eyebrow">The dice picked</div>
+          <div class="roll-pick-title">${escapeHtml(rolled.book.title)}</div>
+          <div class="roll-pick-meta">
+            <span style="color:${topicColor};">#${rolled.book.topic} · ${escapeHtml(topic ? topic.title : '')}</span>
+            · Continue from <strong>p.${getCurrentPage(rolled.key) + 1}</strong>
+          </div>
+        </div>
+        <div class="roll-reasons">
+          <div class="roll-reasons-label">Why this one</div>
+          <ul>
+            ${rolled.reasons.slice(0, 4).map(r => `<li>${escapeHtml(r)}</li>`).join('') || '<li>Stochastic pick from your active books</li>'}
+          </ul>
+        </div>
+        <div style="text-align:center;margin:10px 0 14px;">
+          <button class="btn btn-small" id="roll-again">🎲 Re-roll</button>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:14px;">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Pages Read</label>
+              <input type="number" class="form-input" id="roll-pages" min="0" placeholder="0">
+              <div class="form-help">Target: ${rolled.weeklyTarget} pp/wk</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Duration (min)</label>
+              <input type="number" class="form-input" id="roll-duration" min="0" placeholder="${timerState.elapsedSec ? Math.round(timerState.elapsedSec/60) : ''}">
+              ${timerState.elapsedSec ? `<div class="form-help">From timer (${Math.round(timerState.elapsedSec/60)} min)</div>` : '<div class="form-help">Optional</div>'}
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Notes</label>
+            <textarea class="form-textarea" id="roll-notes" placeholder="Key insight, what to revisit, atomic note seed..."></textarea>
+          </div>
+        </div>
+      `;
+      footer = `
+        <button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" id="roll-save" data-book="${rolled.key}">Save Session</button>
+      `;
+    }
+  } else if (type === 'leverage') {
+    title = 'Leverage Log Entry';
+    body = `
+      <div class="form-group">
+        <label class="form-label">Today's Insight</label>
+        <textarea class="form-textarea" id="leverage-text" placeholder="One transferable principle from today's work..." autofocus></textarea>
+        <div class="form-help">What's the principle? How does it generalize?</div>
+      </div>
+    `;
+    footer = `
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="save-leverage">Save Entry</button>
+    `;
+  } else if (type === 'edit-book') {
+    const k = modalState.context && modalState.context.book;
+    const book = k && BOOK_PROGRESS[k];
+    if (!book) {
+      title = 'Edit Book';
+      body = `<div style="padding:20px;color:var(--accent-bad);font-size:12px;">Book not found.</div>`;
+      footer = `<button class="btn" onclick="closeModal()">Close</button>`;
+    } else {
+      const cur = getCurrentPage(k);
+      const endWeek = getEndWeek(k);
+      title = `Edit: ${escapeHtml(book.title)}`;
+      body = `
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Current Page</label>
+            <input type="number" class="form-input" id="edit-page" value="${cur}" min="0" max="${book.totalPages}">
+            <div class="form-help">of ${book.totalPages}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target End Week</label>
+            <select class="form-select" id="edit-end">
+              ${generateWeekOptions(endWeek)}
+            </select>
+            <div class="form-help">Reschedule if needed</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);padding:8px 12px;background:var(--bg-card);border-radius:4px;margin-top:8px;font-family:'DM Mono',monospace;">
+          Default: ${escapeHtml(book.endWeek)} → ${escapeHtml(endWeek)}
+        </div>
+      `;
+      footer = `
+        <button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" id="save-edit" data-book="${k}">Save</button>
+      `;
+    }
+  } else if (type === 'timer') {
+    title = 'Session Timer';
+    body = `
+      <div id="timer-display" class="timer-display ${timerState.running ? (timerState.paused ? 'paused' : 'running') : ''}">
+        00:00:00
+      </div>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:12px;">
+        ${!timerState.running ?
+          `<button class="btn btn-primary" id="timer-start">▶ Start</button>` :
+          `<button class="btn" id="timer-pause">${timerState.paused ? '▶ Resume' : '⏸ Pause'}</button>`
+        }
+        <button class="btn" id="timer-reset">Reset</button>
+        <button class="btn btn-primary" id="timer-log">Log as Session</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:12px;font-style:italic;">
+        Timer keeps running when modal closes. Reopen any time to log.
+      </div>
+    `;
+    footer = `<button class="btn" onclick="closeModal()">Close</button>`;
+  } else if (type === 'data') {
+    title = 'Data Management';
+    body = `
+      <div class="form-group">
+        <label class="form-label">Export</label>
+        <button class="btn" id="data-export" style="width:100%;">Download State as JSON</button>
+        <div class="form-help">Save for Obsidian vault integration or backup</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Import</label>
+        <input type="file" class="form-input" id="data-import" accept="application/json" style="padding:6px;">
+        <div class="form-help">Restore from a previous export</div>
+      </div>
+      <div class="form-group" style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);">
+        <label class="form-label" style="color:var(--accent-bad);">Danger Zone</label>
+        <button class="btn btn-danger" id="data-reset" style="width:100%;">Reset All Progress</button>
+        <div class="form-help">Erases all sessions, page progress, leverage entries, and completion marks. Cannot be undone.</div>
+      </div>
+      <div style="font-size:10px;color:var(--text-muted);font-family:'DM Mono',monospace;margin-top:14px;padding:10px;background:var(--bg-card);border-radius:4px;">
+        Sessions: ${P.sessions.length} · Pages logged: ${P.sessions.reduce((s,x)=>s+(x.pagesRead||0),0)} · Books complete: ${Object.keys(P.bookCompleted).length} · Leverage notes: ${P.leverageLog.length}
+      </div>
+    `;
+    footer = `<button class="btn" onclick="closeModal()">Close</button>`;
+  } else if (type === 'sync') {
+    title = 'GitHub Sync';
+    const connected = syncEnabled();
+    const lastPushLabel = P.sync.lastPushAt ? new Date(P.sync.lastPushAt).toLocaleString() : '—';
+    const lastPullLabel = P.sync.lastPullAt ? new Date(P.sync.lastPullAt).toLocaleString() : '—';
+    body = connected ? `
+      <div style="padding:10px 12px;background:var(--bg-card);border-radius:5px;border-left:3px solid var(--accent-good);margin-bottom:14px;">
+        <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--accent-good);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Connected</div>
+        <div style="font-size:12px;">Gist ID: <code style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-secondary);">${escapeHtml(P.sync.gistId || '(creating…)')}</code></div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-family:'DM Mono',monospace;">
+          Last push: ${lastPushLabel}<br>
+          Last pull: ${lastPullLabel}<br>
+          Status: ${P.sync.status}${P.sync.lastError ? ' — ' + escapeHtml(P.sync.lastError) : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary" id="sync-push" style="flex:1;">↑ Push Now</button>
+        <button class="btn" id="sync-pull" style="flex:1;">↓ Pull Now</button>
+      </div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+        <button class="btn btn-danger" id="sync-disconnect" style="width:100%;">Disconnect</button>
+        <div class="form-help">Removes the token from this device only. Your gist stays in your GitHub account.</div>
+      </div>
+      <div style="font-size:10px;color:var(--text-muted);margin-top:12px;font-style:italic;line-height:1.5;">
+        Auto-sync pushes 2 seconds after any change. To sync to another device, paste the same token there.
+      </div>
+    ` : `
+      <div style="font-size:12px;line-height:1.5;color:var(--text-secondary);margin-bottom:14px;">
+        Sync your progress across devices via a private GitHub Gist. Create a Personal Access Token with <strong>only</strong> the <code style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-primary);background:var(--bg-card);padding:1px 4px;border-radius:2px;">gist</code> scope:
+      </div>
+      <a href="https://github.com/settings/tokens/new?description=Curriculum%20Dashboard&scopes=gist" target="_blank" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;margin-bottom:14px;">→ Create PAT on GitHub</a>
+      <div class="form-group">
+        <label class="form-label">Paste Token</label>
+        <input type="password" class="form-input" id="sync-token-input" placeholder="ghp_..." autocomplete="off" style="font-family:'DM Mono',monospace;">
+        <div class="form-help">Stored in localStorage on this device. Has gist scope only — cannot access repos or account settings.</div>
+      </div>
+      ${P.sync.lastError ? `<div style="padding:8px 10px;background:var(--accent-bad)15;border-left:2px solid var(--accent-bad);border-radius:0 4px 4px 0;font-size:11px;color:var(--accent-bad);margin-bottom:10px;">Last error: ${escapeHtml(P.sync.lastError)}</div>` : ''}
+    `;
+    footer = connected
+      ? `<button class="btn" onclick="closeModal()">Close</button>`
+      : `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="sync-connect">Connect</button>`;
+  }
+
+    return `
+      <div class="modal-backdrop" id="modal-backdrop">
+        <div class="modal" onclick="event.stopPropagation()">
+          <div class="modal-head">
+            <div class="modal-title">${title}</div>
+            <button class="modal-close" onclick="closeModal()">×</button>
+          </div>
+          <div class="modal-body">${body}</div>
+          <div class="modal-foot">${footer}</div>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    console.error('renderModal error:', e);
+    return `<div class="modal-backdrop" id="modal-backdrop"><div class="modal"><div class="modal-head"><div class="modal-title">Error</div><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body" style="color:var(--accent-bad);font-size:12px;">Modal failed: ${escapeHtml(e.message)}</div></div></div>`;
+  }
+}
+
+function generateWeekOptions(selected) {
+  let opts = '';
+  for (let m = 0; m < 14; m++) {
+    for (let w = 1; w <= 4; w++) {
+      const k = weekKey(m, w);
+      const label = `${MF[m]} ${MY[m]} W${w}`;
+      opts += `<option value="${k}" ${k===selected?'selected':''}>${label}</option>`;
+    }
+  }
+  return opts;
+}
+
+// ── EVENTS ──
+function bind() {
+  try {
+    document.querySelectorAll('[data-tab]').forEach(el => {
+      el.addEventListener('click', () => {
+        try { S.tab = el.dataset.tab; render(); window.scrollTo(0,0); }
+        catch (e) { console.error('tab nav error:', e); }
+      });
+    });
+    document.querySelectorAll('[data-z]').forEach(el => {
+      el.addEventListener('click', () => { S.zoom = el.dataset.z; render(); });
+    });
+    document.querySelectorAll('[data-f]').forEach(el => {
+      el.addEventListener('click', () => { S.tier = el.dataset.f; render(); });
+    });
+    document.querySelectorAll('[data-detail]').forEach(el => {
+      el.addEventListener('click', () => { S.detail = +el.dataset.detail; render(); });
+    });
+
+    // Modal triggers
+    document.querySelectorAll('[data-modal]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        openModal(el.dataset.modal, { book: el.dataset.book });
+      });
+    });
+
+    // Modal backdrop close
+    const backdrop = document.getElementById('modal-backdrop');
+    if (backdrop) backdrop.addEventListener('click', closeModal);
+
+    // Deliverable checkboxes
+    document.querySelectorAll('[data-deliverable]').forEach(el => {
+      el.addEventListener('change', () => {
+        try {
+          const parts = (el.dataset.deliverable || '').split('|');
+          if (parts.length !== 3) return;
+          const [tid, sublet, wk] = parts;
+          toggleDeliverable(+tid, sublet, wk);
+          render();
+        } catch (e) { console.error('deliverable toggle error:', e); }
+      });
+    });
+
+    // Mark book complete / reopen
+    document.querySelectorAll('[data-mark-complete]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        const k = el.dataset.markComplete;
+        const book = BOOK_PROGRESS[k];
+        if (!book) { toast('Book not found', true); return; }
+        P.bookCompleted[k] = true;
+        P.bookProgress[k] = book.totalPages;
+        savePersistent();
+        toast(`${book.title} marked complete`);
+        render();
+      });
+    });
+    document.querySelectorAll('[data-mark-incomplete]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        const k = el.dataset.markIncomplete;
+        delete P.bookCompleted[k];
+        savePersistent();
+        render();
+      });
+    });
+
+    // Delete session
+    document.querySelectorAll('[data-delete-session]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        if (!confirm('Delete this session and revert page progress?')) return;
+        const idx = +el.dataset.deleteSession;
+        if (isNaN(idx) || idx < 0 || idx >= P.sessions.length) { toast('Invalid session', true); return; }
+        deleteSession(idx);
+        render();
+      });
+    });
+
+    // Modal form handlers
+    const saveSession = document.getElementById('save-session');
+    if (saveSession) {
+      saveSession.addEventListener('click', () => {
+        try {
+          const bookEl = document.getElementById('session-book');
+          const pagesEl = document.getElementById('session-pages');
+          const durationEl = document.getElementById('session-duration');
+          const notesEl = document.getElementById('session-notes');
+          if (!pagesEl || !durationEl || !notesEl) { toast('Form error', true); return; }
+          const book = bookEl ? bookEl.value : '';
+          const pages = pagesEl.value;
+          const duration = durationEl.value;
+          const notes = notesEl.value;
+          if (!pages && !duration && !notes.trim()) {
+            toast('Enter pages, duration, or notes', true);
+            return;
+          }
+          // Validate pages is reasonable
+          const pageNum = +pages;
+          if (pages && (isNaN(pageNum) || pageNum < 0 || pageNum > 5000)) {
+            toast('Pages must be 0–5000', true);
+            return;
+          }
+          const durNum = +duration;
+          if (duration && (isNaN(durNum) || durNum < 0 || durNum > 1440)) {
+            toast('Duration must be 0–1440 min', true);
+            return;
+          }
+          logSession(book, pages || 0, duration || 0, notes);
+          if (timerState.elapsedSec && Math.abs(+duration - Math.round(timerState.elapsedSec/60)) < 1) {
+            resetTimer();
+          }
+          closeModal();
+          toast(pages ? `+${pages} pages logged` : 'Session logged');
+        } catch (e) { console.error('save session error:', e); toast('Save failed', true); }
+      });
+    }
+
+    // Roll modal: re-roll and save
+    const rollAgain = document.getElementById('roll-again');
+    if (rollAgain) {
+      rollAgain.addEventListener('click', () => {
+        if (modalState && modalState.context) {
+          // Force a new pick by clearing cached roll
+          modalState.context.rolled = suggestRandomActivity();
+        }
+        render();
+      });
+    }
+    const rollSave = document.getElementById('roll-save');
+    if (rollSave) {
+      rollSave.addEventListener('click', () => {
+        try {
+          const book = rollSave.dataset.book;
+          const pagesEl = document.getElementById('roll-pages');
+          const durationEl = document.getElementById('roll-duration');
+          const notesEl = document.getElementById('roll-notes');
+          if (!pagesEl || !durationEl || !notesEl) { toast('Form error', true); return; }
+          const pages = pagesEl.value;
+          const duration = durationEl.value;
+          const notes = notesEl.value;
+          if (!pages && !duration && !notes.trim()) {
+            toast('Enter pages, duration, or notes', true);
+            return;
+          }
+          const pageNum = +pages;
+          if (pages && (isNaN(pageNum) || pageNum < 0 || pageNum > 5000)) {
+            toast('Pages must be 0–5000', true); return;
+          }
+          const durNum = +duration;
+          if (duration && (isNaN(durNum) || durNum < 0 || durNum > 1440)) {
+            toast('Duration must be 0–1440 min', true); return;
+          }
+          logSession(book, pages || 0, duration || 0, notes);
+          if (timerState.elapsedSec && Math.abs(+duration - Math.round(timerState.elapsedSec/60)) < 1) {
+            resetTimer();
+          }
+          closeModal();
+          toast(pages ? `🎲 +${pages} pages logged` : '🎲 Session logged');
+        } catch (e) { console.error('roll save error:', e); toast('Save failed', true); }
+      });
+    }
+
+    const saveLeverage = document.getElementById('save-leverage');
+    if (saveLeverage) {
+      saveLeverage.addEventListener('click', () => {
+        try {
+          const textEl = document.getElementById('leverage-text');
+          if (!textEl) return;
+          const text = textEl.value;
+          if (!text.trim()) { toast('Empty entry', true); return; }
+          addLeverageEntry(text);
+          closeModal();
+          toast('Leverage note saved');
+        } catch (e) { console.error('save leverage error:', e); toast('Save failed', true); }
+      });
+    }
+
+    const saveEdit = document.getElementById('save-edit');
+    if (saveEdit) {
+      saveEdit.addEventListener('click', () => {
+        try {
+          const k = saveEdit.dataset.book;
+          const book = BOOK_PROGRESS[k];
+          if (!book) { toast('Book not found', true); return; }
+          const pageEl = document.getElementById('edit-page');
+          const endEl = document.getElementById('edit-end');
+          if (!pageEl || !endEl) { toast('Form error', true); return; }
+          const newPage = +pageEl.value;
+          const newEnd = endEl.value;
+          if (isNaN(newPage) || newPage < 0 || newPage > book.totalPages) {
+            toast(`Page must be 0–${book.totalPages}`, true);
+            return;
+          }
+          P.bookProgress[k] = newPage;
+          if (newEnd !== book.endWeek) P.bookEndOverrides[k] = newEnd;
+          else delete P.bookEndOverrides[k];
+          if (newPage >= book.totalPages) P.bookCompleted[k] = true;
+          else delete P.bookCompleted[k];
+          savePersistent();
+          closeModal();
+          toast('Updated');
+        } catch (e) { console.error('save edit error:', e); toast('Save failed', true); }
+      });
+    }
+
+    // Timer controls
+    const tStart = document.getElementById('timer-start');
+    if (tStart) tStart.addEventListener('click', () => { startTimer(); render(); });
+    const tPause = document.getElementById('timer-pause');
+    if (tPause) tPause.addEventListener('click', () => { pauseTimer(); render(); });
+    const tReset = document.getElementById('timer-reset');
+    if (tReset) tReset.addEventListener('click', () => { resetTimer(); render(); });
+    const tLog = document.getElementById('timer-log');
+    if (tLog) tLog.addEventListener('click', () => { closeModal(); setTimeout(() => openModal('log-session'), 100); });
+
+    // Data management
+    const exp = document.getElementById('data-export');
+    if (exp) exp.addEventListener('click', exportState);
+    const imp = document.getElementById('data-import');
+    if (imp) imp.addEventListener('change', e => { if (e.target.files && e.target.files[0]) importState(e.target.files[0]); });
+    const rst = document.getElementById('data-reset');
+    if (rst) rst.addEventListener('click', () => { resetState(); closeModal(); });
+
+    // Sync
+    const sConnect = document.getElementById('sync-connect');
+    if (sConnect) sConnect.addEventListener('click', async () => {
+      const input = document.getElementById('sync-token-input');
+      if (!input) return;
+      const token = input.value;
+      sConnect.disabled = true;
+      sConnect.textContent = 'Connecting…';
+      await connectSync(token);
+      if (syncEnabled()) closeModal();
+    });
+    const sPush = document.getElementById('sync-push');
+    if (sPush) sPush.addEventListener('click', async () => {
+      sPush.disabled = true;
+      try { await pushToGist(); toast('Pushed'); render(); }
+      catch (e) { toast('Push failed: ' + e.message, true); }
+      finally { sPush.disabled = false; }
+    });
+    const sPull = document.getElementById('sync-pull');
+    if (sPull) sPull.addEventListener('click', async () => {
+      sPull.disabled = true;
+      try { await pullFromGist(); }
+      catch (e) { toast('Pull failed: ' + e.message, true); }
+      finally { sPull.disabled = false; }
+    });
+    const sDisc = document.getElementById('sync-disconnect');
+    if (sDisc) sDisc.addEventListener('click', () => {
+      if (confirm('Disconnect from GitHub on this device? Your gist will remain in your account.')) {
+        disconnectSync();
+        closeModal();
+      }
+    });
+
+    // Init timer display if timer modal is open
+    if (modalState && modalState.type === 'timer') {
+      updateTimerDisplay();
+    }
+
+    // Refresh sync badge every 30s so "synced Xs ago" stays current
+    if (!window._syncBadgeRefresh) {
+      window._syncBadgeRefresh = setInterval(updateSyncBadge, 30000);
+    }
+  } catch (e) {
+    console.error('bind error:', e);
+  }
+}
+
+// ── INIT ──
+render();

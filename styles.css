@@ -381,6 +381,14 @@ input[type="range"] { width: 80px; accent-color: var(--text-muted); height: 3px;
 .rp-pace.on-track { background: var(--accent-good)20; color: var(--accent-good); }
 .rp-pace.behind { background: var(--accent-warn)20; color: var(--accent-warn); }
 .rp-pace.ahead { background: var(--accent-good)20; color: var(--accent-good); }
+/* P3 #11: distinct severity from "behind" — bad/red with an inset rim so a
+   past-target book can't visually blend with on-pace siblings. Inset rim
+   instead of border keeps the pill the same physical size as the others. */
+.rp-pace.overdue {
+  background: var(--accent-bad)20; color: var(--accent-bad);
+  box-shadow: inset 0 0 0 1px var(--accent-bad)55;
+  font-weight: 600;
+}
 
 /* Syntopic clusters */
 .cluster-box {

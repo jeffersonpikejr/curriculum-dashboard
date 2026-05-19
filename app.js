@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v20 | 2026-05-19 10:12';
+const APP_VERSION = 'v21 | 2026-05-19 10:16';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
@@ -942,9 +942,12 @@ function suggestRandomActivity() {
       const [em, ew] = endWeek.split('-W').map(Number);
       if ([sm, sw, em, ew].some(isNaN)) return false;
       const sIdx = sm * 4 + sw;
-      const eIdx = em * 4 + ew;
       const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
-      return cIdx >= sIdx && cIdx <= eIdx;
+      // P3 #11: include overdue (cIdx > eIdx, not yet complete). Dropping
+      // the upper bound makes the dice eligible to surface a past-target
+      // book — appropriate, since unfinished overdue work is more urgent
+      // than fresh on-pace reading.
+      return cIdx >= sIdx;
     } catch { return false; }
   });
 
@@ -1038,9 +1041,11 @@ function renderThisWeek() {
       const [em,ew] = endWeek.split('-W').map(Number);
       if ([sm,sw,em,ew].some(isNaN)) return false;
       const sIdx = sm * 4 + sw;
-      const eIdx = em * 4 + ew;
       const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
-      return cIdx >= sIdx && cIdx <= eIdx;
+      // P3 #11: include overdue (cIdx > eIdx, not yet complete). Without
+      // this the This Week panel silently drops past-target books, hiding
+      // the very state the OVERDUE pill is supposed to surface.
+      return cIdx >= sIdx;
     } catch { return false; }
   });
 
@@ -1318,6 +1323,12 @@ function renderBookProgress(bookKey, book) {
   const weeksElapsed = curIdx - startIdx + 1;
   const expectedPage = Math.round((weeksElapsed / totalWeeks) * totalPages);
   const hasStarted = weeksElapsed >= 1;
+  // P3 #11: explicit "past target" state. Without this, weeksRemaining
+  // floors to 1 forever and the pace label keeps showing "N PG BEHIND"
+  // with the same expected denominator — useful telemetry but invisible
+  // to the eye. Surface OVERDUE distinctly so it can't blend in.
+  const weeksOverdue = (hasStarted && !isComplete) ? Math.max(0, curIdx - endIdx) : 0;
+  const isOverdue = weeksOverdue > 0;
 
   let paceLabel, paceClass;
   if (isComplete) {
@@ -1326,6 +1337,9 @@ function renderBookProgress(bookKey, book) {
   } else if (!hasStarted) {
     paceLabel = 'UPCOMING';
     paceClass = 'on-track';
+  } else if (isOverdue) {
+    paceLabel = `OVERDUE · ${weeksOverdue} WK${weeksOverdue === 1 ? '' : 'S'} PAST TARGET`;
+    paceClass = 'overdue';
   } else if (currentPage === 0 && weeksElapsed <= 1) {
     paceLabel = 'STARTING';
     paceClass = 'on-track';
@@ -1339,10 +1353,13 @@ function renderBookProgress(bookKey, book) {
   }
 
   const topicColor = `var(--t${book.topic || 2})`;
-  const scheduleLabel = hasStarted ? `Active · ends ${weekLabel(endWeek)}` : `Starts ${weekLabel(startWeek)}`;
+  const scheduleLabel = isOverdue
+    ? `Past target · ended ${weekLabel(endWeek)}`
+    : hasStarted ? `Active · ends ${weekLabel(endWeek)}` : `Starts ${weekLabel(startWeek)}`;
 
   const goalText = isComplete ? 'Done — pick the next book.'
     : !hasStarted ? `Begins ${weekLabel(startWeek)} (${diffWeeks(curIdx, startIdx)} weeks from now)`
+    : isOverdue ? `${remaining} pp left past target — finish ASAP or push the end week`
     : `read ~${pagesPerWeek} pages (${remaining} pp over ${weeksRemaining} weeks)`;
 
   const priorityNote = book.priorityChapters && book.priorityChapters.length ? `

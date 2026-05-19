@@ -304,32 +304,68 @@ function statePayload() {
   return rest;
 }
 
+// Build the drafts payload pushed to the gist (mirrors the localStorage shape)
+function draftsPayload() {
+  const payload = { entries: draftEntries, books: {}, topics: [] };
+  draftEntries.forEach(d => {
+    if (d.kind === 'book' && BOOK_PROGRESS[d.key]) {
+      payload.books[d.key] = BOOK_PROGRESS[d.key];
+    } else if (d.kind === 'topic') {
+      const t = T.find(x => x.id === d.key);
+      if (t) payload.topics.push(t);
+    }
+  });
+  return payload;
+}
+
+// Apply a drafts payload (from gist) into runtime + localStorage
+function applyDraftsPayload(payload) {
+  if (!payload || !Array.isArray(payload.entries)) return;
+  // Clear current drafts so we don't leave stale entries when remote shrinks
+  [...draftEntries].forEach(d => {
+    if (d.kind === 'book') delete BOOK_PROGRESS[d.key];
+    if (d.kind === 'topic') {
+      const i = T.findIndex(t => t.id === d.key);
+      if (i >= 0) T.splice(i, 1);
+    }
+  });
+  draftEntries = [];
+  // Restore topics first
+  (payload.topics || []).forEach(t => {
+    if (!T.find(x => x.id === t.id)) T.push(t);
+  });
+  // Restore books
+  Object.entries(payload.books || {}).forEach(([k, b]) => {
+    if (!BOOK_PROGRESS[k]) BOOK_PROGRESS[k] = b;
+  });
+  draftEntries = payload.entries;
+  try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(payload)); } catch (_) {}
+}
+
 async function pushToGist() {
   if (!syncEnabled()) return;
   P.sync.status = 'syncing';
   P.sync.lastError = null;
   updateSyncBadge();
   try {
-    const content = JSON.stringify(statePayload(), null, 2);
+    const stateContent  = JSON.stringify(statePayload(), null, 2);
+    const draftsContent = JSON.stringify(draftsPayload(), null, 2);
+    const files = {
+      'state.json':  { content: stateContent },
+      'drafts.json': { content: draftsContent },
+    };
     let result;
     if (P.sync.gistId) {
       // Update existing
       result = await gistFetch(`https://api.github.com/gists/${P.sync.gistId}`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          description: GIST_DESCRIPTION,
-          files: { 'state.json': { content } },
-        }),
+        body: JSON.stringify({ description: GIST_DESCRIPTION, files }),
       });
     } else {
       // Create new
       result = await gistFetch('https://api.github.com/gists', {
         method: 'POST',
-        body: JSON.stringify({
-          description: GIST_DESCRIPTION,
-          public: false,
-          files: { 'state.json': { content } },
-        }),
+        body: JSON.stringify({ description: GIST_DESCRIPTION, public: false, files }),
       });
       P.sync.gistId = result.id;
     }
@@ -358,19 +394,32 @@ async function pullFromGist() {
   updateSyncBadge();
   try {
     const data = await gistFetch(`https://api.github.com/gists/${P.sync.gistId}`);
-    const file = data.files && data.files['state.json'];
-    if (!file) throw new Error('Gist missing state.json');
-    let content = file.content;
-    if (file.truncated && file.raw_url) {
-      const raw = await fetch(file.raw_url);
-      content = await raw.text();
-    }
-    const remote = JSON.parse(content);
+    const stateFile = data.files && data.files['state.json'];
+    if (!stateFile) throw new Error('Gist missing state.json');
+    const readFile = async f => {
+      if (f.truncated && f.raw_url) {
+        const raw = await fetch(f.raw_url);
+        return raw.text();
+      }
+      return f.content;
+    };
+    const stateContent = await readFile(stateFile);
+    const remote = JSON.parse(stateContent);
     const preservedSync = P.sync;
     P = {...cloneDefault(), ...remote, sync: preservedSync};
     P.sync.lastPullAt = Date.now();
     P.sync.status = 'idle';
     savePersistentLocalOnly();
+
+    // Drafts file is optional — older gists may not have it
+    const draftsFile = data.files && data.files['drafts.json'];
+    if (draftsFile) {
+      try {
+        const draftsContent = await readFile(draftsFile);
+        applyDraftsPayload(JSON.parse(draftsContent));
+      } catch (e) { console.warn('drafts pull failed:', e); }
+    }
+
     render();
     toast('Pulled latest state');
   } catch (e) {
@@ -452,6 +501,184 @@ function syncBadgeClass() {
   if (P.sync.status === 'syncing') return 'syncing';
   if (P.sync.status === 'error') return 'error';
   return 'ok';
+}
+
+// ── INTAKE / DRAFT ENTRIES ──
+// New resources/topics added via the "+ Add" modal.
+// They mutate BOOK_PROGRESS / T directly so the dashboard's existing pacing
+// math picks them up on the next render. Persisted to localStorage under
+// DRAFTS_KEY so they survive page reloads — committing back to data.js
+// (via the patch button) is optional but recommended for portability.
+const MEDIA_TYPES = [
+  { id: 'book',     label: 'Book',                 icon: '📕' },
+  { id: 'paper',    label: 'Paper / Article',      icon: '📄' },
+  { id: 'guidance', label: 'Guidance / Reg doc',   icon: '📋' },
+  { id: 'course',   label: 'Course',               icon: '🎓' },
+  { id: 'video',    label: 'Video',                icon: '🎬' },
+  { id: 'podcast',  label: 'Podcast',              icon: '🎧' },
+];
+function getMediaType(id) { return MEDIA_TYPES.find(m => m.id === id) || MEDIA_TYPES[0]; }
+
+const DRAFTS_KEY = 'curriculum_v4_drafts';
+let draftEntries = []; // { kind:'book'|'topic', key }
+
+function saveDrafts() {
+  try {
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(draftsPayload()));
+    scheduleAutoSync(); // push drafts to gist if connected
+  } catch (e) { console.warn('saveDrafts failed:', e); }
+}
+
+function loadDrafts() {
+  try {
+    const raw = localStorage.getItem(DRAFTS_KEY);
+    if (!raw) return;
+    const payload = JSON.parse(raw);
+    if (!payload || !Array.isArray(payload.entries)) return;
+    // Restore topics first (so book→topic refs resolve)
+    (payload.topics || []).forEach(t => {
+      if (!T.find(x => x.id === t.id)) T.push(t);
+    });
+    // Restore books
+    Object.entries(payload.books || {}).forEach(([k, b]) => {
+      if (!BOOK_PROGRESS[k]) BOOK_PROGRESS[k] = b;
+    });
+    draftEntries = payload.entries;
+  } catch (e) { console.warn('loadDrafts failed:', e); }
+}
+
+function clearAllDrafts() {
+  // Snapshot then remove (mutates BOOK_PROGRESS / T)
+  [...draftEntries].forEach(d => {
+    if (d.kind === 'book') delete BOOK_PROGRESS[d.key];
+    if (d.kind === 'topic') {
+      const i = T.findIndex(t => t.id === d.key);
+      if (i >= 0) T.splice(i, 1);
+    }
+  });
+  draftEntries = [];
+  try { localStorage.removeItem(DRAFTS_KEY); } catch (_) {}
+  scheduleAutoSync(); // propagate the clear to gist
+}
+
+// Snap an ISO date (YYYY-MM-DD) to the nearest curriculum week.
+// Curriculum weeks: each month divided into 4 quartiles (day 1, 8, 15, 22).
+function dateToWeekKey(isoDate) {
+  if (!isoDate) return null;
+  try {
+    const target = new Date(isoDate + 'T00:00:00');
+    if (isNaN(target.getTime())) return null;
+    const MONTH_NAME_IDX = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    let best = null, bestDiff = Infinity;
+    for (let m = 0; m < 14; m++) {
+      const mNum = MONTH_NAME_IDX[MF[m]];
+      for (let w = 1; w <= 4; w++) {
+        const d = new Date(MY[m], mNum, (w - 1) * 7 + 4); // midpoint of week
+        const diff = Math.abs(target - d);
+        if (diff < bestDiff) { bestDiff = diff; best = weekKey(m, w); }
+      }
+    }
+    return best;
+  } catch { return null; }
+}
+
+function weekKeyToLabel(wk) {
+  if (!wk) return '—';
+  const [m, w] = wk.split('-W').map(Number);
+  if (isNaN(m) || isNaN(w) || m < 0 || m >= MF.length) return wk;
+  return `${MF[m]} ${MY[m]} W${w}`;
+}
+
+// Approximate ISO date for the start of a curriculum week (for date-input defaults)
+function weekKeyToDate(wk) {
+  if (!wk) return '';
+  const [m, w] = wk.split('-W').map(Number);
+  if (isNaN(m) || isNaN(w)) return '';
+  const MONTH_NAME_IDX = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const d = new Date(MY[m], MONTH_NAME_IDX[MF[m]], (w - 1) * 7 + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function nextFreeTopicId() {
+  const taken = new Set(T.map(t => t.id));
+  for (let i = 1; i < 100; i++) if (!taken.has(i)) return i;
+  return T.length + 1;
+}
+
+function addDraftBook({ title, author, mediaType, topicId, totalPages, startWeek, endWeek, note }) {
+  const slug = (title || 'untitled').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  const safeKey = `${slug}-${Date.now().toString(36).slice(-4)}`;
+  BOOK_PROGRESS[safeKey] = {
+    title, author: author || '',
+    totalPages: Math.max(1, +totalPages || 1), currentPage: 0,
+    startWeek, endWeek,
+    topic: +topicId,
+    mediaType,
+    note: note || `Draft · ${getMediaType(mediaType).label}`,
+  };
+  draftEntries.push({ kind: 'book', key: safeKey });
+  saveDrafts();
+  return safeKey;
+}
+
+function addDraftTopic({ title, color }) {
+  const id = nextFreeTopicId();
+  T.push({
+    id, title,
+    color: color || 'var(--text-secondary)',
+    bg: 'rgba(148,163,184,0.15)',
+    scope: 'Draft topic — added via intake',
+    tf: '—', burn: '—', practice: '', notes: '',
+    subs: [],
+  });
+  draftEntries.push({ kind: 'topic', key: id });
+  saveDrafts();
+  return id;
+}
+
+function removeDraft(kind, key) {
+  draftEntries = draftEntries.filter(d => !(d.kind === kind && d.key === key));
+  if (kind === 'book') delete BOOK_PROGRESS[key];
+  if (kind === 'topic') {
+    const i = T.findIndex(t => t.id === key);
+    if (i >= 0) T.splice(i, 1);
+  }
+  saveDrafts();
+}
+
+function generatePatch() {
+  const bookSnippets = draftEntries.filter(d => d.kind === 'book').map(d => {
+    const b = BOOK_PROGRESS[d.key];
+    if (!b) return '';
+    const sw = b.startWeek.split('-W').map(Number);
+    const ew = b.endWeek.split('-W').map(Number);
+    return `  ${JSON.stringify(d.key)}: {
+    title: ${JSON.stringify(b.title)}, author: ${JSON.stringify(b.author || '')},
+    totalPages: ${b.totalPages}, currentPage: 0,
+    startWeek: weekKey(${sw[0]}, ${sw[1]}),
+    endWeek:   weekKey(${ew[0]}, ${ew[1]}),
+    topic: ${b.topic},
+    mediaType: ${JSON.stringify(b.mediaType)},
+    note: ${JSON.stringify(b.note || '')},
+  },`;
+  }).filter(Boolean).join('\n');
+
+  const topicSnippets = draftEntries.filter(d => d.kind === 'topic').map(d => {
+    const t = T.find(x => x.id === d.key);
+    if (!t) return '';
+    return `  {id: ${t.id}, title: ${JSON.stringify(t.title)}, color: ${JSON.stringify(t.color)}, bg: ${JSON.stringify(t.bg)},
+   scope: ${JSON.stringify(t.scope)}, tf: ${JSON.stringify(t.tf)}, burn: ${JSON.stringify(t.burn)},
+   practice: ${JSON.stringify(t.practice)}, notes: ${JSON.stringify(t.notes)},
+   subs: []},`;
+  }).filter(Boolean).join('\n');
+
+  let patch = '// === Curriculum data.js patch ===\n';
+  patch += '// Generated ' + new Date().toISOString() + '\n';
+  patch += '// Paste each block into the matching section of data.js, then reload.\n\n';
+  if (topicSnippets) patch += '// ── New topics: append inside the T = [ ... ] array ──\n' + topicSnippets + '\n\n';
+  if (bookSnippets)  patch += '// ── New resources: append inside the BOOK_PROGRESS = { ... } object ──\n' + bookSnippets + '\n';
+  if (!topicSnippets && !bookSnippets) patch += '// (no draft entries)\n';
+  return patch;
 }
 
 // ── MODAL ──
@@ -545,20 +772,27 @@ function render() {
       <div class="header">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
           <div style="flex:1;min-width:0;">
-            <h1>Personal Learning Curriculum <span class="today-badge">May 17, 2026 · W3 of May</span></h1>
-            <div class="sub">Obsidian + Anki + morning block · 10 topics · syntopic clusters where applicable</div>
+            <h1><span class="desktop-only">Personal Learning Curriculum </span><span class="mobile-only">Curriculum </span><span class="today-badge">May 17, 2026 · W3 of May</span></h1>
+            <div class="sub desktop-only">Obsidian + Anki + morning block · 10 topics · syntopic clusters where applicable</div>
           </div>
           <button id="sync-badge" class="sync-badge ${syncBadgeClass()}" data-modal="sync" title="Click to manage GitHub sync">${syncBadgeText()}</button>
         </div>
         <div class="action-bar" style="margin-top:12px;margin-bottom:0;">
           <span class="action-bar-label">Quick Actions</span>
           <button class="btn btn-primary" data-modal="log-session">+ Log Session</button>
-          <button class="btn" data-modal="leverage">+ Leverage Note</button>
-          <button class="btn" data-modal="timer">⏱ Timer</button>
+          <button class="btn" data-modal="add-resource">+ Add Resource</button>
+          <button class="btn" data-modal="leverage"><span class="desktop-only">+ Leverage Note</span><span class="mobile-only">+ Note</span></button>
+          <button class="btn" data-modal="timer">⏱ <span class="desktop-only">Timer</span></button>
           <span style="flex:1;"></span>
           <button class="btn btn-ghost btn-small" data-modal="sync">Sync</button>
           <button class="btn btn-ghost btn-small" data-modal="data">Data</button>
         </div>
+        ${draftEntries.length ? `
+          <div class="draft-banner">
+            <span>📝 <strong>${draftEntries.length}</strong> draft ${draftEntries.length===1?'entry':'entries'} saved locally — view patch when ready to commit to data.js</span>
+            <button class="btn btn-small" data-modal="patch">View patch</button>
+          </div>
+        ` : ''}
       </div>
       <div class="tabs">
         <button class="tab ${S.tab==='this-week'?'active':''}" data-tab="this-week">This Week</button>
@@ -685,17 +919,6 @@ function suggestRandomActivity() {
 
 // ── THIS WEEK ──
 function renderThisWeek() {
-  const currentTasks = [];
-  T.forEach(t => {
-    (t.subs || []).forEach(s => {
-      (s.weeks||[]).forEach(w => {
-        if (w.wk === CURRENT_WEEK_KEY) {
-          currentTasks.push({topic: t, sub: s, week: w});
-        }
-      });
-    });
-  });
-
   // Reading progress for current week
   const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
     if (isBookComplete(k)) return false;
@@ -805,7 +1028,7 @@ function renderThisWeek() {
     <div class="dice-row">
       <button class="dice-button" data-modal="roll" title="Roll for a study activity">
         <span class="dice-face">🎲</span>
-        <span class="dice-text">Roll for activity</span>
+        <span class="dice-text"><span class="desktop-only">Roll for activity</span><span class="mobile-only">Roll activity</span></span>
       </button>
     </div>
     ${suggestion ? `
@@ -813,9 +1036,9 @@ function renderThisWeek() {
         <div class="suggestion-label">▶ Read Now</div>
         <div class="suggestion-title">${escapeHtml(suggestion.book.title)} — p.${suggestion.currentPage + 1}</div>
         <div class="suggestion-detail">
-          Weekly target: <strong>${suggestion.pagesPerWeek} pp</strong>${suggestion.pagesThisWeekForBook > 0 ? ` · logged this week: ${suggestion.pagesThisWeekForBook} pp` : ''}${suggestion.weeklyGap > 0 ? ` · <span style="color:var(--accent-warn);">${suggestion.weeklyGap} pp short</span>` : ' · on pace'}
+          <span class="desktop-only">Weekly target: </span><span class="mobile-only">Target: </span><strong>${suggestion.pagesPerWeek} pp</strong>${suggestion.pagesThisWeekForBook > 0 ? ` · <span class="desktop-only">logged this week: </span><span class="mobile-only">done: </span>${suggestion.pagesThisWeekForBook} pp` : ''}${suggestion.weeklyGap > 0 ? ` · <span style="color:var(--accent-warn);">${suggestion.weeklyGap} pp short</span>` : ' · on pace'}
         </div>
-        <button class="btn btn-primary btn-small" data-modal="log-session" data-book="${suggestion.key}">+ Log Session for This</button>
+        <button class="btn btn-primary btn-small" data-modal="log-session" data-book="${suggestion.key}"><span class="desktop-only">+ Log Session for This</span><span class="mobile-only">+ Log This</span></button>
       </div>
     ` : ''}
 
@@ -823,22 +1046,22 @@ function renderThisWeek() {
       <div class="stat-card">
         <div class="stat-label">Streak</div>
         <div class="stat-value">${streak}<span style="font-size:12px;color:var(--text-muted);font-weight:400;"> days</span></div>
-        <div class="stat-sub">consecutive study days</div>
+        <div class="stat-sub desktop-only">consecutive study days</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Pages · 7d</div>
         <div class="stat-value">${pagesThisWeek}<span style="font-size:11px;color:var(--text-muted);font-weight:400;"> / ~${weeklyTarget}</span></div>
-        <div class="stat-sub">target this week · <span class="rp-pace ${loadClass}" style="padding:1px 5px;font-size:9px;">${loadLabel}</span></div>
+        <div class="stat-sub"><span class="desktop-only">target this week · </span><span class="rp-pace ${loadClass}" style="padding:1px 5px;font-size:9px;">${loadLabel}</span></div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Sessions · 7d</div>
         <div class="stat-value">${sessionsThisWeek}</div>
-        <div class="stat-sub">${minThisWeek} min total</div>
+        <div class="stat-sub">${minThisWeek} min<span class="desktop-only"> total</span></div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Books Active</div>
         <div class="stat-value">${activeBooks.length}</div>
-        <div class="stat-sub">${Object.keys(P.bookCompleted).length} completed · ${upcomingBooks.length} upcoming</div>
+        <div class="stat-sub"><span class="desktop-only">${Object.keys(P.bookCompleted).length} completed · ${upcomingBooks.length} upcoming</span><span class="mobile-only">${Object.keys(P.bookCompleted).length}✓ · ${upcomingBooks.length}↗</span></div>
       </div>
     </div>
 
@@ -850,37 +1073,15 @@ function renderThisWeek() {
       ${renderStreakGrid()}
     </div>
 
-    <div class="week-banner">
-      <div class="wb-label">▎ This Week's Focus</div>
-      <div style="font-size:14px;line-height:1.5;color:var(--text-primary);">
-        ${currentTasks.length === 0 ? 'No tasks scheduled this week — review timeline or log catch-up sessions.' : `${currentTasks.length} active sub-topic tasks this week.`}
-      </div>
-      <div class="wb-grid">
-        ${currentTasks.map(ct => {
-          const done = isDeliverableDone(ct.topic.id, ct.sub.l, ct.week.wk);
-          return `
-          <div class="wb-item" style="border-left:3px solid ${ct.topic.color};${done?'opacity:0.6;':''}">
-            <div class="wb-topic" style="color:${ct.topic.color};">#${ct.topic.id} · ${ct.sub.l}) ${escapeHtml(ct.sub.n)}</div>
-            <div class="wb-task">${escapeHtml(ct.week.focus)}</div>
-            <div class="wb-meta">${escapeHtml(ct.week.res)}${ct.week.pages && ct.week.pages!=='—' ? ' · ' + escapeHtml(ct.week.pages) : ''}</div>
-            <label class="deliverable-check ${done?'done':''}" style="margin-top:6px;">
-              <input type="checkbox" ${done?'checked':''} data-deliverable="${ct.topic.id}|${ct.sub.l}|${ct.week.wk}">
-              ${escapeHtml(ct.week.del)}
-            </label>
-          </div>
-        `;}).join('')}
-      </div>
-    </div>
-
-    <div class="sec-title">Active Reading — This Week's Pace</div>
+    <div class="sec-title"><span class="desktop-only">Active Reading — This Week's Pace</span><span class="mobile-only">Active Reading</span></div>
     ${activeBooks.length === 0 ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px;border:1px dashed var(--border);border-radius:6px;">No active books this week. ${upcomingBooks.length ? 'See upcoming books below.' : ''}</div>` : activeBooks.map(([k,b]) => renderBookProgress(k, b)).join('')}
 
     ${upcomingBooks.length > 0 ? `
-      <div class="sec-title">Upcoming — Starts in Next 4 Weeks</div>
+      <div class="sec-title"><span class="desktop-only">Upcoming — Starts in Next 4 Weeks</span><span class="mobile-only">Upcoming (4 wks)</span></div>
       ${upcomingBooks.map(([k,b]) => renderBookProgress(k, b)).join('')}
     ` : ''}
 
-    <div class="sec-title">Syntopic Reading Clusters — Active</div>
+    <div class="sec-title"><span class="desktop-only">Syntopic Reading Clusters — Active</span><span class="mobile-only">Active Clusters</span></div>
     ${getActiveClusters().map(({c, color}) => renderCluster(c, color)).join('')}
   `;
 }
@@ -1716,7 +1917,7 @@ function renderModal() {
       </div>
     ` : `
       <div style="font-size:12px;line-height:1.5;color:var(--text-secondary);margin-bottom:14px;">
-        Sync your progress across devices via a private GitHub Gist. Create a Personal Access Token with <strong>only</strong> the <code style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-primary);background:var(--bg-card);padding:1px 4px;border-radius:2px;">gist</code> scope:
+        Sync your progress and draft resources across devices via a private GitHub Gist. Create a Personal Access Token with <strong>only</strong> the <code style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-primary);background:var(--bg-card);padding:1px 4px;border-radius:2px;">gist</code> scope:
       </div>
       <a href="https://github.com/settings/tokens/new?description=Curriculum%20Dashboard&scopes=gist" target="_blank" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;margin-bottom:14px;">→ Create PAT on GitHub</a>
       <div class="form-group">
@@ -1729,6 +1930,112 @@ function renderModal() {
     footer = connected
       ? `<button class="btn" onclick="closeModal()">Close</button>`
       : `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="sync-connect">Connect</button>`;
+  } else if (type === 'add-resource') {
+    // Live form state stored on modalState.context so re-renders don't wipe input.
+    if (!modalState.context) modalState.context = {};
+    const ctx = modalState.context;
+    if (!ctx.mediaType) ctx.mediaType = 'book';
+    if (!ctx.topicChoice) ctx.topicChoice = (T[0] && String(T[0].id)) || 'new';
+    if (!ctx.startDate) ctx.startDate = weekKeyToDate(CURRENT_WEEK_KEY);
+    if (!ctx.endDate)   ctx.endDate   = weekKeyToDate(weekKey(Math.min(13, CURRENT_MONTH_IDX + 1), 4));
+
+    const startSnap = dateToWeekKey(ctx.startDate);
+    const endSnap   = dateToWeekKey(ctx.endDate);
+    const addingNewTopic = ctx.topicChoice === 'new';
+
+    title = '+ Add Resource';
+    body = `
+      <div class="form-group">
+        <label class="form-label">Media type</label>
+        <div class="media-pills" id="media-pills">
+          ${MEDIA_TYPES.map(m => `
+            <button type="button" class="media-pill ${ctx.mediaType===m.id?'active':''}" data-media="${m.id}">
+              <span class="media-pill-icon">${m.icon}</span>
+              <span class="media-pill-label">${m.label}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Title</label>
+        <input type="text" class="form-input" id="ar-title" placeholder="e.g. Fundamentals of Biostatistics" value="${escapeHtml(ctx.title || '')}">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Author / Source</label>
+          <input type="text" class="form-input" id="ar-author" placeholder="Optional" value="${escapeHtml(ctx.author || '')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Length (pages / units)</label>
+          <input type="number" class="form-input" id="ar-pages" min="1" placeholder="e.g. 80" value="${escapeHtml(ctx.totalPages || '')}">
+          <div class="form-help desktop-only">For video/podcast/course, use approximate page-equivalents (e.g. 1 page ≈ 3 min)</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Topic</label>
+        <select class="form-select" id="ar-topic">
+          ${T.map(t => `<option value="${t.id}" ${String(t.id)===String(ctx.topicChoice)?'selected':''}>#${t.id} · ${escapeHtml(t.title)}</option>`).join('')}
+          <option value="new" ${addingNewTopic?'selected':''}>+ New topic…</option>
+        </select>
+      </div>
+
+      ${addingNewTopic ? `
+        <div class="form-row" style="padding:10px 12px;background:var(--bg-card);border-left:3px solid var(--accent-warn);border-radius:0 4px 4px 0;">
+          <div class="form-group">
+            <label class="form-label">New topic title</label>
+            <input type="text" class="form-input" id="ar-newtopic" placeholder="e.g. Biostatistics" value="${escapeHtml(ctx.newTopicTitle || '')}">
+            <div class="form-help">Will be assigned ID #${nextFreeTopicId()}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Color (CSS)</label>
+            <input type="text" class="form-input" id="ar-newcolor" placeholder="#a78bfa" value="${escapeHtml(ctx.newTopicColor || '')}">
+            <div class="form-help">Optional · default muted</div>
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Start date</label>
+          <input type="date" class="form-input" id="ar-start" value="${escapeHtml(ctx.startDate)}">
+          <div class="form-help">Snaps to <strong>${escapeHtml(weekKeyToLabel(startSnap))}</strong></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">End date</label>
+          <input type="date" class="form-input" id="ar-end" value="${escapeHtml(ctx.endDate)}">
+          <div class="form-help">Snaps to <strong>${escapeHtml(weekKeyToLabel(endSnap))}</strong></div>
+        </div>
+      </div>
+
+      ${draftEntries.length ? `
+        <div style="margin-top:14px;padding:10px 12px;background:rgba(251,191,36,0.08);border-left:3px solid var(--accent-warn);border-radius:0 4px 4px 0;font-size:11px;line-height:1.5;">
+          <strong>${draftEntries.length} draft entr${draftEntries.length===1?'y':'ies'}</strong> saved locally.
+          <button class="btn btn-small" style="margin-left:8px;" id="ar-show-patch">View patch</button>
+        </div>
+      ` : ''}
+    `;
+    footer = `
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="ar-save">Add & Recalculate</button>
+    `;
+  } else if (type === 'patch') {
+    title = 'data.js Patch';
+    const patch = generatePatch();
+    body = `
+      <div style="font-size:12px;line-height:1.5;color:var(--text-secondary);margin-bottom:10px;">
+        Drafts are autosaved to local storage and survive reloads. To make them portable across devices, paste the snippets below into <code style="font-family:'DM Mono',monospace;background:var(--bg-card);padding:1px 5px;border-radius:3px;">data.js</code> at the indicated sections, reload, then use "Clear drafts" to remove the local copies.
+      </div>
+      <textarea class="form-textarea" id="patch-text" readonly style="min-height:240px;font-family:'DM Mono',monospace;font-size:11px;line-height:1.4;">${escapeHtml(patch)}</textarea>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-primary" id="patch-copy">Copy to clipboard</button>
+        <button class="btn" id="patch-download">Download .js</button>
+        <span style="flex:1;"></span>
+        <button class="btn btn-danger btn-small" id="patch-clear">Clear drafts</button>
+      </div>
+    `;
+    footer = `<button class="btn" onclick="closeModal()">Close</button>`;
   }
 
     return `
@@ -1974,6 +2281,128 @@ function bind() {
       });
     }
 
+    // Add-Resource modal: live form bindings
+    if (modalState && modalState.type === 'add-resource') {
+      const ctx = modalState.context;
+      const sync = () => {
+        const t = document.getElementById('ar-title');
+        const a = document.getElementById('ar-author');
+        const p = document.getElementById('ar-pages');
+        const tp = document.getElementById('ar-topic');
+        const sd = document.getElementById('ar-start');
+        const ed = document.getElementById('ar-end');
+        const nt = document.getElementById('ar-newtopic');
+        const nc = document.getElementById('ar-newcolor');
+        if (t)  ctx.title = t.value;
+        if (a)  ctx.author = a.value;
+        if (p)  ctx.totalPages = p.value;
+        if (tp) ctx.topicChoice = tp.value;
+        if (sd) ctx.startDate = sd.value;
+        if (ed) ctx.endDate = ed.value;
+        if (nt) ctx.newTopicTitle = nt.value;
+        if (nc) ctx.newTopicColor = nc.value;
+      };
+
+      document.querySelectorAll('[data-media]').forEach(el => {
+        el.addEventListener('click', e => {
+          e.preventDefault();
+          sync();
+          ctx.mediaType = el.dataset.media;
+          render();
+        });
+      });
+      const topicSel = document.getElementById('ar-topic');
+      if (topicSel) topicSel.addEventListener('change', () => { sync(); render(); });
+
+      // Live re-render the "Snaps to..." labels when dates change
+      ['ar-start','ar-end'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', () => { sync(); render(); });
+      });
+
+      // Track text inputs into ctx without re-rendering (preserves focus)
+      ['ar-title','ar-author','ar-pages','ar-newtopic','ar-newcolor'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', sync);
+      });
+
+      const showPatch = document.getElementById('ar-show-patch');
+      if (showPatch) showPatch.addEventListener('click', () => { sync(); openModal('patch'); });
+
+      const arSave = document.getElementById('ar-save');
+      if (arSave) arSave.addEventListener('click', () => {
+        try {
+          sync();
+          const title = (ctx.title || '').trim();
+          const pages = +ctx.totalPages;
+          if (!title) { toast('Title required', true); return; }
+          if (!pages || pages < 1 || pages > 100000) { toast('Length must be 1–100000', true); return; }
+          const startSnap = dateToWeekKey(ctx.startDate);
+          const endSnap   = dateToWeekKey(ctx.endDate);
+          if (!startSnap || !endSnap) { toast('Pick valid start + end dates', true); return; }
+          // Compare week indices
+          const [sm, sw] = startSnap.split('-W').map(Number);
+          const [em, ew] = endSnap.split('-W').map(Number);
+          if (sm*4+sw > em*4+ew) { toast('End must be on/after start', true); return; }
+
+          let topicId;
+          if (ctx.topicChoice === 'new') {
+            const tt = (ctx.newTopicTitle || '').trim();
+            if (!tt) { toast('New topic needs a title', true); return; }
+            topicId = addDraftTopic({ title: tt, color: (ctx.newTopicColor || '').trim() || null });
+          } else {
+            topicId = +ctx.topicChoice;
+            if (!T.find(t => t.id === topicId)) { toast('Pick a topic', true); return; }
+          }
+
+          addDraftBook({
+            title, author: ctx.author || '', mediaType: ctx.mediaType,
+            topicId, totalPages: pages,
+            startWeek: startSnap, endWeek: endSnap,
+          });
+
+          toast(`+ ${title} added · weekly allocation recalculated`);
+          closeModal();
+          // Re-render picks up the new entry through existing BOOK_PROGRESS iteration
+          render();
+        } catch (e) { console.error('add-resource save error:', e); toast('Save failed', true); }
+      });
+    }
+
+    // Patch modal handlers
+    if (modalState && modalState.type === 'patch') {
+      const copyBtn = document.getElementById('patch-copy');
+      if (copyBtn) copyBtn.addEventListener('click', async () => {
+        try {
+          const text = document.getElementById('patch-text').value;
+          await navigator.clipboard.writeText(text);
+          toast('Patch copied');
+        } catch (e) {
+          const ta = document.getElementById('patch-text');
+          if (ta) { ta.select(); document.execCommand('copy'); toast('Patch copied'); }
+        }
+      });
+      const dl = document.getElementById('patch-download');
+      if (dl) dl.addEventListener('click', () => {
+        const text = document.getElementById('patch-text').value;
+        const blob = new Blob([text], { type: 'text/javascript' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `curriculum-patch-${new Date().toISOString().slice(0,10)}.js`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 500);
+      });
+      const clear = document.getElementById('patch-clear');
+      if (clear) clear.addEventListener('click', () => {
+        if (!confirm('Remove all draft entries from local storage? Use this after you have pasted the patch into data.js and reloaded.')) return;
+        clearAllDrafts();
+        closeModal();
+        render();
+        toast('Drafts cleared');
+      });
+    }
+
     // Timer controls
     const tStart = document.getElementById('timer-start');
     if (tStart) tStart.addEventListener('click', () => { startTimer(); render(); });
@@ -2040,6 +2469,8 @@ function bind() {
 }
 
 // ── INIT ──
+// Restore any draft books/topics from a previous session before first render
+loadDrafts();
 // Re-evaluate mobile class on viewport changes (rotation, window resize)
 try {
   let resizeRaf = null;

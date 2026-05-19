@@ -1,0 +1,5 @@
+# Claude commit-watcher artifacts — local sentinel + log, not for version control.
+.claude-commit-request
+.claude-watcher.log
+
+# Keep the scripts themselves tracked so the setup is reproducible across machines.

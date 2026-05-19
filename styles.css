@@ -301,10 +301,48 @@ input[type="range"] { width: 80px; accent-color: var(--text-muted); height: 3px;
 .g-label.topic { font-weight: 600; cursor: pointer; }
 .g-label.topic:hover { background: var(--bg-hover); }
 .g-label.sub { padding-left: 18px !important; font-size: 10px; color: var(--text-secondary); }
-.g-cell { min-width: 32px; height: 26px; padding: 3px 1px !important; }
+.g-cell { min-width: 32px; height: 26px; padding: 3px 1px !important; position: relative; }
 .g-bar { height: 14px; border-radius: 2px; margin: 0 1px; opacity: 0.8; }
+/* Live book-schedule overlay — thin stripe at the bottom of the cell. Renders
+   regardless of whether the curriculum-intent bar (.g-bar) is present, so that
+   schedule "drift" (book pushed outside the topic's declared months) is
+   visible. Toggled by the Overlay control in the Timeline header. */
+.g-bar-book {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 1px;
+  height: 3px;
+  border-radius: 1px;
+  opacity: 0.55;
+  box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25) inset;
+}
 .g-today { background: rgba(16,185,129,0.08); position: relative; }
 .g-today::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--accent-good); }
+
+/* Version stamp — auto-bumped by commit.ps1, click-through, very subtle.
+   Sanity indicator: hard-refresh after a commit to confirm deploy fired. */
+.app-version-footer {
+  position: fixed;
+  bottom: 6px;
+  right: 10px;
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: var(--text-dim);
+  background: var(--bg-card);
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 50;
+  letter-spacing: 0.02em;
+  transition: opacity 0.15s ease;
+}
+.app-version-footer:hover { opacity: 0.95; }
+@media (max-width: 600px) {
+  .app-version-footer { font-size: 8px; padding: 2px 5px; bottom: 4px; right: 4px; }
+}
 
 /* Topic detail */
 .topic-head { display: flex; gap: 14px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }

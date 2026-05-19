@@ -286,6 +286,36 @@ body.mobile-active .toast { animation: toastInMobile 0.3s ease-out; }
 .toggle-btn.active { background: var(--border); color: var(--text-primary); }
 .detail-desc { font-size: 10px; color: var(--text-dim); font-family: 'DM Mono', monospace; margin-left: 4px; }
 input[type="range"] { width: 80px; accent-color: var(--text-muted); height: 3px; }
+
+/* Timeline Topics dropdown — <details>-based so it's keyboard-accessible
+   and click-outside closes via the native summary toggle. The menu floats
+   absolute so it doesn't reflow the controls bar. */
+.topic-filter { position: relative; }
+.topic-filter > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 10px; min-width: 60px;
+}
+.topic-filter > summary::-webkit-details-marker { display: none; }
+.topic-filter[open] > summary { background: var(--border); color: var(--text-primary); }
+.topic-filter-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
+  min-width: 260px; max-height: 360px; overflow-y: auto;
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.topic-filter-actions { display: flex; gap: 4px; padding: 2px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.topic-filter-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  font-size: 11px; font-family: 'DM Sans', sans-serif; color: var(--text-secondary);
+  border-radius: 3px; cursor: pointer;
+}
+.topic-filter-row:hover { background: var(--bg-card); color: var(--text-primary); }
+.topic-filter-row input[type="checkbox"] { accent-color: var(--accent-good); cursor: pointer; }
+.topic-filter-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.topic-filter-id { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--text-muted); min-width: 14px; }
+.topic-filter-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slider-val { font-size: 10px; font-family: 'DM Mono', monospace; color: var(--text-secondary); min-width: 14px; }
 
 /* Gantt */
@@ -369,8 +399,17 @@ input[type="range"] { width: 80px; accent-color: var(--text-muted); height: 3px;
 .rp-title { font-size: 13px; font-weight: 500; }
 .rp-author { font-size: 11px; color: var(--text-secondary); }
 .rp-stats { font-size: 10px; font-family: 'DM Mono', monospace; color: var(--text-muted); white-space: nowrap; }
-.rp-bar { height: 6px; background: var(--bg-card); border-radius: 3px; overflow: hidden; margin-top: 6px; }
-.rp-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.rp-bar { height: 6px; background: var(--bg-card); border-radius: 3px; overflow: hidden; margin-top: 6px; position: relative; }
+.rp-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s, background-color 0.3s; }
+/* Weekly target overlay — translucent green chunk spanning pagesPerWeek
+   immediately after the current fill. Dashed right edge marks the end-of-week
+   projection. Hover for the exact pp target. */
+.rp-bar-target {
+  position: absolute; top: 0; bottom: 0;
+  background: var(--accent-good); opacity: 0.32;
+  border-right: 1px dashed var(--accent-good);
+  pointer-events: auto;
+}
 .rp-week-goal {
   margin-top: 8px; padding: 6px 10px; background: var(--bg-card); border-radius: 4px;
   font-size: 11px; display: flex; justify-content: space-between; align-items: center;

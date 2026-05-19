@@ -17,10 +17,10 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v24 | 2026-05-19 10:32';
+const APP_VERSION = 'v25 | 2026-05-19 10:40';
 
 // ── STATE & PERSISTENCE ──
-let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
+let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true, topicFilter: null /* null = all topics; otherwise Set<number> */, topicFilterOpen: false };
 
 // ── VIEWING DATE (header nav + backdated log default) ──
 // Local-time "YYYY-MM-DD" key. Use this everywhere we bucket sessions or
@@ -1354,6 +1354,18 @@ function renderStreakGrid() {
   return `<div class="streak-grid">${cells}</div>`;
 }
 
+// Progress-state color ramp: light gray (early) → deep green (complete).
+// Hue fixed at the green family; saturation and lightness interpolate so the
+// bar reads as "fading in" toward completion. Replaces the old topic-color
+// fill so the bar carries progress signal rather than topic identity (the
+// topic color still lives on the card's left border and the timeline).
+function progressBarColor(pct) {
+  const t = Math.max(0, Math.min(1, (pct || 0) / 100));
+  const sat   = 5  + (60 - 5)  * t;
+  const light = 80 - (80 - 35) * t;
+  return `hsl(140, ${sat.toFixed(1)}%, ${light.toFixed(1)}%)`;
+}
+
 function renderBookProgress(bookKey, book) {
   // Defensive guards
   if (!book || !bookKey) return '';
@@ -1466,9 +1478,25 @@ function renderBookProgress(bookKey, book) {
           })()}</div>
           <div style="font-size:9px;font-family:'DM Mono',monospace;color:var(--text-muted);margin-top:2px;">${scheduleLabel}</div>
         </div>
-        <div class="rp-stats">${currentPage} / ${totalPages} pp</div>
+        <div class="rp-stats">${currentPage} / ${totalPages} pp · ${Math.round(pct)}%</div>
       </div>
-      <div class="rp-bar"><div class="rp-bar-fill" style="width:${pct}%;background:${topicColor};"></div></div>
+      ${(() => {
+        // Weekly target overlay: a chunk inside the bar starting at the
+        // current % and spanning the next pagesPerWeek's worth of pages.
+        // Skip if not started or already complete — nothing to project.
+        // For overdue books the chunk legitimately stretches to 100% (the
+        // floored weeksRemaining=1 makes pagesPerWeek = all remaining).
+        const showTarget = hasStarted && !isComplete && remaining > 0 && pagesPerWeek > 0;
+        if (!showTarget) {
+          return `<div class="rp-bar"><div class="rp-bar-fill" style="width:${pct}%;background:${progressBarColor(pct)};"></div></div>`;
+        }
+        const chunkPct = Math.min(100 - pct, (pagesPerWeek / totalPages) * 100);
+        const targetTitle = `Weekly target: ${pagesPerWeek} pp (this week's chunk)`;
+        return `<div class="rp-bar">
+          <div class="rp-bar-fill" style="width:${pct}%;background:${progressBarColor(pct)};"></div>
+          <div class="rp-bar-target" style="left:${pct}%;width:${chunkPct.toFixed(2)}%;" title="${targetTitle}"></div>
+        </div>`;
+      })()}
       <div class="rp-week-goal" title="Weekly target = remaining pages ÷ weeks remaining until target end date. Edit the book to push the end date if pace shifts.">
         <span><strong>This week:</strong> ${goalText}</span>
         <span class="rp-pace ${paceClass}">${paceLabel}</span>
@@ -1607,6 +1635,10 @@ function renderCluster(cluster, color) {
 
 // ── TIMELINE ──
 function renderTimeline() {
+  const selectedTopics = (S.topicFilter instanceof Set) ? S.topicFilter : null;
+  const totalTopics = T.length;
+  const selectedCount = selectedTopics ? selectedTopics.size : totalTopics;
+  const filterLabel = selectedTopics ? `${selectedCount}/${totalTopics}` : 'All';
   return `
     <div class="controls">
       <div class="control-group"><span class="control-label">Zoom</span><div class="toggle-group">
@@ -1625,13 +1657,38 @@ function renderTimeline() {
       <div class="control-group"><span class="control-label">Overlay</span><div class="toggle-group">
         <button class="toggle-btn ${S.bookOverlay?'active':''}" data-overlay="books" title="Show live book schedules (from current start/end, reflects edits)">📚 Books</button>
       </div></div>
+      <div class="control-group"><span class="control-label">Topics</span>
+        <details class="topic-filter" id="topic-filter-details"${S.topicFilterOpen ? ' open' : ''}>
+          <summary class="toggle-btn" title="Choose which topics to show in the Gantt">${filterLabel} ▾</summary>
+          <div class="topic-filter-menu">
+            <div class="topic-filter-actions">
+              <button type="button" class="btn btn-small btn-ghost" data-topic-filter-action="all">Select all</button>
+              <button type="button" class="btn btn-small btn-ghost" data-topic-filter-action="none">Clear all</button>
+            </div>
+            ${T.map(t => {
+              const isOn = !selectedTopics || selectedTopics.has(t.id);
+              return `<label class="topic-filter-row">
+                <input type="checkbox" data-topic-filter="${t.id}" ${isOn ? 'checked' : ''}>
+                <span class="topic-filter-dot" style="background:${t.color};"></span>
+                <span class="topic-filter-id">${t.id}</span>
+                <span class="topic-filter-title">${escapeHtml(t.title || '')}</span>
+              </label>`;
+            }).join('')}
+          </div>
+        </details>
+      </div>
     </div>
     ${gantt()}
   `;
 }
 
 function gantt() {
-  const fT = S.tier==='all' ? T : T.filter(t=>String(tierOf(t.id))===S.tier);
+  let fT = S.tier==='all' ? T : T.filter(t=>String(tierOf(t.id))===S.tier);
+  // Topic filter (null = all). Layered after the tier filter so the two
+  // controls compose: e.g. Focus=Tier 1 + manually deselect a single topic.
+  if (S.topicFilter instanceof Set) {
+    fT = fT.filter(t => S.topicFilter.has(t.id));
+  }
   if (S.zoom === 'weekly') return weeklyGantt(fT);
   return monthlyGantt(fT);
 }
@@ -2566,6 +2623,42 @@ function bind() {
         render();
       });
     });
+    // Topic filter — per-checkbox toggle + Select all / Clear all actions.
+    // Null S.topicFilter means "all"; we hydrate it into an explicit Set on
+    // the first deselection so the user's choice survives across renders.
+    document.querySelectorAll('[data-topic-filter]').forEach(el => {
+      el.addEventListener('change', () => {
+        const id = +el.dataset.topicFilter;
+        if (isNaN(id)) return;
+        if (!(S.topicFilter instanceof Set)) {
+          S.topicFilter = new Set(T.map(t => t.id));
+        }
+        if (el.checked) S.topicFilter.add(id);
+        else            S.topicFilter.delete(id);
+        // If they've re-checked everything, drop back to the null sentinel
+        // so the label reads "All" and gantt() skips the filter check.
+        if (S.topicFilter.size === T.length) S.topicFilter = null;
+        render();
+      });
+    });
+    document.querySelectorAll('[data-topic-filter-action]').forEach(el => {
+      el.addEventListener('click', () => {
+        const a = el.dataset.topicFilterAction;
+        if (a === 'all')  S.topicFilter = null;
+        if (a === 'none') S.topicFilter = new Set();
+        render();
+      });
+    });
+    // Track <details> open state so render()-driven rebuilds don't snap the
+    // dropdown shut after a checkbox click. The native toggle event fires
+    // AFTER the open attribute changes; we mirror it into S and skip the
+    // implicit render so the user's click doesn't trigger a full re-paint.
+    const topicDetails = document.getElementById('topic-filter-details');
+    if (topicDetails) {
+      topicDetails.addEventListener('toggle', () => {
+        S.topicFilterOpen = topicDetails.open;
+      });
+    }
     // Date navigation
     const dnPrev = document.getElementById('dn-prev');
     if (dnPrev) dnPrev.addEventListener('click', () => { shiftViewingDate(-1); render(); });

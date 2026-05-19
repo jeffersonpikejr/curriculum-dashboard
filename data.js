@@ -230,7 +230,7 @@ const T = [
      {l:"B",n:"Spaced Repetition (Anki)",f:"System setup, card design, daily habit",mo:[0,1],
       weeks:[
         {w:"May W1",wk:weekKey(0,1),focus:"Anki setup + SuperMemo 20 rules",res:"Anki Manual + 20 Rules",pages:"~30 pp",del:"Deck structure designed, first 30 cards"},
-        {w:"May W2",wk:weekKey(0,2),focus:"Card design patterns",res:"Anki community best practices",pages:"~20 pp",del:"Stewart rNPV deck complete (25 cards) ✓"},
+        {w:"May W2",wk:weekKey(0,2),focus:"Card design patterns",res:"Anki community best practices",pages:"~20 pp",del:"Stewart rNPV deck complete (25 cards)",done:true},
         {w:"May W3",wk:weekKey(0,3),focus:"Daily review habit formation",res:"Atomic Habits habit stacking",pages:"~20 pp",del:"7-day streak, retention rate logged"},
         {w:"May W4",wk:weekKey(0,4),focus:"Integration — cards from all active topics",res:"Self-generated from #2 + #7 readings",pages:"—",del:"100+ cards across topics, retention >85%"},
         {w:"Jun W1-4",wk:weekKey(1,1),focus:"Sustained practice + refinement",res:"Daily review + new card creation",pages:"—",del:"Daily streak maintained, retention tracked"},
@@ -257,7 +257,7 @@ const T = [
      {l:"A",n:"Trial Design + Regulatory Strategy",f:"Adaptive designs, endpoints, FDA interaction, IND/NDA",mo:[0,1,2,3,4,5],
       weeks:[
         {w:"May W1-2",wk:weekKey(0,1),focus:"Adaptive trial design frameworks",res:"FDA Adaptive Designs Guidance — in progress",pages:"30 pp (~12 done)",del:"Adaptive design decision tree for vault"},
-        {w:"May W3",wk:weekKey(0,3),focus:"rNPV valuation foundations",res:"Stewart et al. (2001) ✓",pages:"5 pp ✓",del:"25 Anki cards, rV/rNPV equations internalized ✓"},
+        {w:"May W3",wk:weekKey(0,3),focus:"rNPV valuation foundations",res:"Stewart et al. (2001) ✓",pages:"5 pp ✓",del:"25 Anki cards, rV/rNPV equations internalized",done:true},
         {w:"May W4",wk:weekKey(0,4),focus:"Trial design fundamentals begin",res:"Friedman ch.1 (Introduction to Clinical Trials)",pages:"18 pp",del:"Trial taxonomy note"},
         {w:"Jun W1",wk:weekKey(1,1),focus:"The question + study population",res:"Friedman ch.3 + ch.4",pages:"31 pp",del:"Question framing + population framework"},
         {w:"Jun W2",wk:weekKey(1,2),focus:"Basic study design",res:"Friedman ch.5",pages:"26 pp",del:"Study design taxonomy note"},

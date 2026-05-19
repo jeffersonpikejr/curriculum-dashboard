@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v21 | 2026-05-19 10:16';
+const APP_VERSION = 'v22 | 2026-05-19 10:25';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
@@ -208,14 +208,40 @@ function deliverableKey(topicId, subLetter, weekId) {
   return `${topicId}-${subLetter}-${weekId}`;
 }
 
+// P3 #13: small helper to find a week object by (topicId, subLetter, weekId)
+// without walking the whole T tree at every call site. Used by
+// isDeliverableDone to read the static `done:true` default that replaced
+// the old inline ✓ glyphs in del strings.
+function findWeek(topicId, subLetter, weekId) {
+  const topic = T.find(t => t && t.id === topicId);
+  if (!topic) return null;
+  const sub = (topic.subs || []).find(s => s && s.l === subLetter);
+  if (!sub) return null;
+  return (sub.weeks || []).find(w => w && w.wk === weekId) || null;
+}
+
+// Three-state truth table:
+//   P.deliverablesDone[k] === true   → user-checked
+//   P.deliverablesDone[k] === false  → user-explicitly-unchecked (overrides data default)
+//   key not in P.deliverablesDone    → fall back to data-side `done` flag
+// Why three states: stripping inline ✓ from data.js would lose historical
+// completion markers; the data flag preserves them while letting the user
+// override either way going forward.
 function isDeliverableDone(topicId, subLetter, weekId) {
-  return P.deliverablesDone[deliverableKey(topicId, subLetter, weekId)] === true;
+  const k = deliverableKey(topicId, subLetter, weekId);
+  if (Object.prototype.hasOwnProperty.call(P.deliverablesDone, k)) {
+    return P.deliverablesDone[k] === true;
+  }
+  const w = findWeek(topicId, subLetter, weekId);
+  return !!(w && w.done === true);
 }
 
 function toggleDeliverable(topicId, subLetter, weekId) {
+  // Explicit set (not delete) so an explicit "unchecked" survives the
+  // data-side default. Prior implementation used delete-vs-set which
+  // can't represent "user unchecked a default-done item".
   const k = deliverableKey(topicId, subLetter, weekId);
-  if (P.deliverablesDone[k]) delete P.deliverablesDone[k];
-  else P.deliverablesDone[k] = true;
+  P.deliverablesDone[k] = !isDeliverableDone(topicId, subLetter, weekId);
   savePersistent();
 }
 

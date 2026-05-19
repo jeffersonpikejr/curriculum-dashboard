@@ -13,20 +13,33 @@
 // ============================================================================
 
 // ── DATE LOGIC ──
-// Today: May 17, 2026 (mid-Week 3 of May)
-const TODAY = { year: 2026, month: 5, day: 17 };
+// Curriculum anchor: May 2026 = month index 0. All "current X" values are
+// derived from the real-time Date so the dashboard reflects today
+// automatically. The dashboard's view-state (S.viewDate) can shift the
+// rendered "current" for backdating; see VIEW_INFO usage in app.js.
 
 // Months in curriculum (May 2026 → Jun 2027)
 const ML = ["M","J","J","A","S","O","N","D","J","F","M","A","M","J"];
 const MF = ["May","Jun","Jul","Aug","Sep","Oct","Nov","Dec","Jan","Feb","Mar","Apr","May","Jun"];
 const MY = [2026,2026,2026,2026,2026,2026,2026,2026,2027,2027,2027,2027,2027,2027];
 
-// Current month index (May 2026 = 0)
-const CURRENT_MONTH_IDX = 0;
-const CURRENT_WEEK_OF_MONTH = 3; // mid-May, in week 3
-
 // Week index helpers — convert "May W3" → global week index
 function weekKey(mIdx, wNum) { return `${mIdx}-W${wNum}`; }
+
+// Map a real Date → curriculum month index (May 2026 = 0)
+function dateToMonthIdx(d) {
+  const months = (d.getFullYear() - 2026) * 12 + (d.getMonth() - 4); // May = JS month 4
+  return Math.max(0, Math.min(MF.length - 1, months));
+}
+function dateToWeekOfMonth(d) {
+  // Quartile the month into 4 weeks: days 1-7=W1, 8-14=W2, 15-21=W3, 22+=W4
+  return Math.max(1, Math.min(4, Math.floor((d.getDate() - 1) / 7) + 1));
+}
+
+const _NOW = new Date();
+const TODAY = { year: _NOW.getFullYear(), month: _NOW.getMonth() + 1, day: _NOW.getDate() };
+const CURRENT_MONTH_IDX = dateToMonthIdx(_NOW);
+const CURRENT_WEEK_OF_MONTH = dateToWeekOfMonth(_NOW);
 const CURRENT_WEEK_KEY = weekKey(CURRENT_MONTH_IDX, CURRENT_WEEK_OF_MONTH);
 
 const TIER = {1:"Sprint",2:"Core",3:"Ongoing",4:"Project"};

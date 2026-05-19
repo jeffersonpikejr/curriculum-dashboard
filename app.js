@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v22 | 2026-05-19 10:25';
+const APP_VERSION = 'v23 | 2026-05-19 10:28';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
@@ -73,6 +73,10 @@ const DEFAULT_PERSISTENT = {
   deliverablesDone: {},
   sessions: [],
   leverageLog: [],
+  // P4 #14: append-only audit trail of schedule overrides.
+  // Each entry: {ts, bookKey, field: 'startWeek' | 'endWeek', from, to}
+  // Written by the edit-book save handler and the reset-overrides handler.
+  scheduleLog: [],
   customNotes: {},
   sync: {
     token: null,        // GitHub PAT with gist scope
@@ -99,6 +103,7 @@ function loadPersistent() {
     if (!merged.deliverablesDone || typeof merged.deliverablesDone !== 'object') merged.deliverablesDone = {};
     if (!Array.isArray(merged.sessions)) merged.sessions = [];
     if (!Array.isArray(merged.leverageLog)) merged.leverageLog = [];
+    if (!Array.isArray(merged.scheduleLog)) merged.scheduleLog = [];
     if (!merged.customNotes || typeof merged.customNotes !== 'object') merged.customNotes = {};
     if (!merged.sync || typeof merged.sync !== 'object') merged.sync = cloneDefault().sync;
     return merged;
@@ -152,6 +157,21 @@ function hasScheduleOverride(bookKey) {
 function resetScheduleOverride(bookKey) {
   delete P.bookStartOverrides[bookKey];
   delete P.bookEndOverrides[bookKey];
+}
+
+// P4 #14: append an audit entry when a schedule field changes. Caller is
+// responsible for capturing the "from" value BEFORE writing the override and
+// the "to" value AFTER. Skips no-op transitions so the log only records real
+// edits. Newest-first via unshift to match leverageLog conventions.
+function logScheduleChange(bookKey, field, from, to) {
+  if (from === to) return;
+  P.scheduleLog.unshift({
+    ts: Date.now(),
+    bookKey,
+    field,
+    from: from || null,
+    to:   to   || null
+  });
 }
 
 // ── BOOK SCHEDULE → TIMELINE OVERLAY HELPERS ──
@@ -2059,6 +2079,32 @@ function renderLog() {
         <div class="leverage-text">${escapeHtml(l.text)}</div>
       </div>
     `).join('')}
+
+    <div class="sec-title" style="margin-top:24px;">Schedule Changes</div>
+    <div class="action-bar">
+      <span class="action-bar-label">Override Audit Trail</span>
+      <span style="font-size:11px;color:var(--text-muted);">${P.scheduleLog.length} ${P.scheduleLog.length === 1 ? 'entry' : 'entries'}</span>
+    </div>
+    ${P.scheduleLog.length === 0 ? `
+      <div style="padding:30px;text-align:center;color:var(--text-muted);font-size:13px;border:1px dashed var(--border);border-radius:6px;">
+        No schedule overrides yet. Edit a book's start or end week to begin tracking drift.
+      </div>
+    ` : P.scheduleLog.map(e => {
+      const d = new Date(e.ts);
+      const book = BOOK_PROGRESS[e.bookKey];
+      const title = book ? book.title : (e.bookKey || '?');
+      const fieldLabel = e.field === 'startWeek' ? 'Start' : (e.field === 'endWeek' ? 'End' : e.field);
+      return `
+        <div class="log-entry">
+          <div class="log-entry-head">
+            <div>
+              <div class="log-entry-book">${escapeHtml(title)} · ${fieldLabel}</div>
+              <div class="log-entry-meta">${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})} · ${escapeHtml(weekLabel(e.from))} → ${escapeHtml(weekLabel(e.to))}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('')}
   `;
 }
 
@@ -2707,6 +2753,10 @@ function bind() {
               return;
             }
           } catch { toast('Bad week value', true); return; }
+          // P4 #14: capture live values BEFORE we mutate so the audit log
+          // sees the real from→to transition (override-aware via accessors).
+          const prevStart = getStartWeek(k);
+          const prevEnd   = getEndWeek(k);
           P.bookProgress[k] = newPage;
           if (newStart !== book.startWeek) P.bookStartOverrides[k] = newStart;
           else delete P.bookStartOverrides[k];
@@ -2714,6 +2764,8 @@ function bind() {
           else delete P.bookEndOverrides[k];
           if (newPage >= book.totalPages) P.bookCompleted[k] = true;
           else delete P.bookCompleted[k];
+          logScheduleChange(k, 'startWeek', prevStart, getStartWeek(k));
+          logScheduleChange(k, 'endWeek',   prevEnd,   getEndWeek(k));
           savePersistent();
           closeModal();
           toast('Updated');
@@ -2731,7 +2783,13 @@ function bind() {
           const k = editReset.dataset.book;
           if (!k || !BOOK_PROGRESS[k]) { toast('Book not found', true); return; }
           if (!hasScheduleOverride(k)) { toast('No overrides to reset'); return; }
+          // P4 #14: capture live values BEFORE the reset so the audit log
+          // records the back-to-default transition explicitly.
+          const prevStart = getStartWeek(k);
+          const prevEnd   = getEndWeek(k);
           resetScheduleOverride(k);
+          logScheduleChange(k, 'startWeek', prevStart, getStartWeek(k));
+          logScheduleChange(k, 'endWeek',   prevEnd,   getEndWeek(k));
           savePersistent();
           toast('Schedule reset to default');
           render(); // re-render modal so selects + override labels update

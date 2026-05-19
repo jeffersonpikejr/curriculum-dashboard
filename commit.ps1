@@ -51,6 +51,13 @@ foreach ($f in @('app.js', 'data.js')) {
 # Regex-replaces the APP_VERSION literal in app.js. Build number is
 # (count of commits reachable from HEAD) + 1, so each new commit increments
 # monotonically. Failure here is non-fatal — we log and continue.
+#
+# CRITICAL: Windows PowerShell 5.1's Get-Content defaults to the system ANSI
+# code page (typically Windows-1252), not UTF-8. Reading a UTF-8 file without
+# explicit -Encoding UTF8 mangles every multi-byte char (·, —, ‹, ›, emoji
+# etc.) into Latin-1 garbage which then gets written back as UTF-8 → double
+# mojibake (the '·' shown as 'Ã,Â·' bug). Do the read+write as raw bytes via
+# .NET so PS version differences can't bite us.
 if (Test-Path 'app.js') {
   try {
     $count = & git rev-list --count HEAD 2>$null
@@ -58,13 +65,15 @@ if (Test-Path 'app.js') {
     $next = [int]$count + 1
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm'
     $version = "v$next | $ts"
-    $appJs = Get-Content -Raw -Path 'app.js'
-    $pattern = "const APP_VERSION = '[^']*';"
+
+    $appPath  = (Resolve-Path 'app.js').Path
+    $appBytes = [System.IO.File]::ReadAllBytes($appPath)
+    $appJs    = [System.Text.Encoding]::UTF8.GetString($appBytes)
+    $pattern  = "const APP_VERSION = '[^']*';"
     if ($appJs -match $pattern) {
-      $updated = [regex]::Replace($appJs, $pattern, "const APP_VERSION = '$version';")
-      # Preserve original encoding/line endings by writing as bytes.
-      $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($updated)
-      [System.IO.File]::WriteAllBytes((Resolve-Path 'app.js'), $bytes)
+      $updated   = [regex]::Replace($appJs, $pattern, "const APP_VERSION = '$version';")
+      $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllBytes($appPath, $utf8NoBom.GetBytes($updated))
       Write-Host "[commit] version -> $version"
     } else {
       Write-Host "[commit] APP_VERSION constant not found in app.js; skipping bump" -ForegroundColor Yellow

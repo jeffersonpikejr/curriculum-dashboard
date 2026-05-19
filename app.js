@@ -12,22 +12,37 @@
 'use strict';
 
 // ── STATE & PERSISTENCE ──
-const VIEW_MODE_KEY = 'curriculum_v4_viewMode';
-function detectInitialViewMode() {
-  try {
-    const saved = localStorage.getItem(VIEW_MODE_KEY);
-    if (saved === 'pc' || saved === 'mobile') return saved;
-  } catch (_) {}
-  try {
-    if (window.matchMedia && window.matchMedia('(max-width: 600px)').matches) return 'mobile';
-  } catch (_) {}
-  return 'pc';
+let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */ };
+
+// ── VIEWING DATE (header nav + backdated log default) ──
+function todayIso() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
-function setViewMode(mode) {
-  S.viewMode = mode;
-  try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch (_) {}
+function getViewingDate() {
+  // Returns a Date object representing the currently-viewed day (noon local)
+  const iso = S.viewDate || todayIso();
+  return new Date(iso + 'T12:00:00');
 }
-let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewMode: detectInitialViewMode() };
+function getViewingIso() { return S.viewDate || todayIso(); }
+function isViewingToday() { return !S.viewDate || S.viewDate === todayIso(); }
+function shiftViewingDate(days) {
+  const d = getViewingDate();
+  d.setDate(d.getDate() + days);
+  S.viewDate = d.toISOString().slice(0, 10);
+  if (S.viewDate === todayIso()) S.viewDate = null;
+}
+function formatViewingHeader() {
+  const d = getViewingDate();
+  const wkOfMonth = dateToWeekOfMonth(d);
+  const monthIdx = dateToMonthIdx(d);
+  const monthLabel = MF[monthIdx] || d.toLocaleString('en-US', { month: 'short' });
+  const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
+  return `${dayName}, ${monthLabel} ${d.getDate()} · W${wkOfMonth} of ${monthLabel}`;
+}
 const DETAIL_DESC = {1:"Topics only",2:"+ Sub-topic bars",3:"+ Current resource",4:"+ Deliverables",5:"+ Week-by-week"};
 
 const STORAGE_KEY = 'curriculum_v4_state';
@@ -128,8 +143,16 @@ function toggleDeliverable(topicId, subLetter, weekId) {
 }
 
 // ── SESSION LOGGING ──
-function logSession(bookKey, pagesRead, durationMin, notes) {
-  const ts = Date.now();
+function logSession(bookKey, pagesRead, durationMin, notes, isoDate) {
+  // Default to now; if an ISO date (YYYY-MM-DD) is provided, anchor the session
+  // to noon local time on that day so backdated logs slot cleanly into the streak.
+  let ts;
+  if (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+    const d = new Date(isoDate + 'T12:00:00');
+    ts = isNaN(d.getTime()) ? Date.now() : d.getTime();
+  } else {
+    ts = Date.now();
+  }
   const pages = Math.max(0, +pagesRead || 0);
   const dur = Math.max(0, +durationMin || 0);
   const safeBookKey = (bookKey && BOOK_PROGRESS[bookKey]) ? bookKey : '';
@@ -755,24 +778,29 @@ function isViewportNarrow() {
   try { return window.innerWidth <= 600; } catch (_) { return false; }
 }
 function applyMobileBodyClasses() {
-  const mobileToggle = S.viewMode === 'mobile';
-  const narrow = isViewportNarrow();
-  document.body.classList.toggle('view-mobile', mobileToggle);
-  document.body.classList.toggle('mobile-active', mobileToggle || narrow);
+  // Mobile layout is purely viewport-driven now; the manual PC/Mobile toggle
+  // was removed. body.view-mobile (phone-frame chrome) is no longer applied.
+  document.body.classList.toggle('mobile-active', isViewportNarrow());
 }
 function render() {
   try {
     applyMobileBodyClasses();
     const a = document.getElementById("app");
     a.innerHTML = `
-      <div class="view-toggle" role="tablist" aria-label="Viewport mode">
-        <button class="vt-btn ${S.viewMode==='pc'?'active':''}" data-view="pc" role="tab" aria-selected="${S.viewMode==='pc'}">PC</button>
-        <button class="vt-btn ${S.viewMode==='mobile'?'active':''}" data-view="mobile" role="tab" aria-selected="${S.viewMode==='mobile'}">Mobile</button>
-      </div>
       <div class="header">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
           <div style="flex:1;min-width:0;">
-            <h1><span class="desktop-only">Personal Learning Curriculum </span><span class="mobile-only">Curriculum </span><span class="today-badge">May 17, 2026 · W3 of May</span></h1>
+            <h1><span class="desktop-only">Personal Learning Curriculum</span><span class="mobile-only">Curriculum</span></h1>
+            <div class="date-nav" role="group" aria-label="Viewing date">
+              <button class="dn-btn" id="dn-prev" title="Previous day" aria-label="Previous day">‹</button>
+              <button class="dn-label ${isViewingToday() ? 'is-today' : 'is-past'}" id="dn-label" title="${isViewingToday() ? 'Viewing today' : 'Click to return to today'}">
+                <span class="dn-date">${formatViewingHeader()}</span>
+                ${!isViewingToday() ? `<span class="dn-back">↻ Today</span>` : ''}
+              </button>
+              <button class="dn-btn" id="dn-next" title="Next day" aria-label="Next day">›</button>
+              <button class="dn-btn dn-picker" id="dn-picker" title="Pick a date" aria-label="Open calendar">⋯</button>
+              <input type="date" id="dn-date-input" value="${getViewingIso()}" max="${todayIso()}" aria-hidden="true" tabindex="-1">
+            </div>
             <div class="sub desktop-only">Obsidian + Anki + morning block · 10 topics · syntopic clusters where applicable</div>
           </div>
           <button id="sync-badge" class="sync-badge ${syncBadgeClass()}" data-modal="sync" title="Click to manage GitHub sync">${syncBadgeText()}</button>
@@ -1711,6 +1739,7 @@ function renderModal() {
     title = 'Log Study Session';
     const preselectBook = modalState.context?.book || '';
     const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k]) => !isBookComplete(k));
+    const defaultDate = getViewingIso();
     body = `
       <div class="form-group">
         <label class="form-label">Book / Resource</label>
@@ -1721,15 +1750,20 @@ function renderModal() {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label">Pages Read</label>
-          <input type="number" class="form-input" id="session-pages" min="0" placeholder="0">
-          <div class="form-help">Adds to current progress</div>
+          <label class="form-label">Date</label>
+          <input type="date" class="form-input" id="session-date" value="${defaultDate}" max="${todayIso()}">
+          <div class="form-help">${defaultDate === todayIso() ? 'Today (override to backdate)' : 'Backdated from header'}</div>
         </div>
         <div class="form-group">
           <label class="form-label">Duration (min)</label>
           <input type="number" class="form-input" id="session-duration" min="0" placeholder="${timerState.elapsedSec ? Math.round(timerState.elapsedSec/60) : ''}">
           ${timerState.elapsedSec ? `<div class="form-help">Pre-filled from timer (${Math.round(timerState.elapsedSec/60)} min)</div>` : '<div class="form-help">Optional</div>'}
         </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Pages Read</label>
+        <input type="number" class="form-input" id="session-pages" min="0" placeholder="0">
+        <div class="form-help">Adds to current progress</div>
       </div>
       <div class="form-group">
         <label class="form-label">Notes</label>
@@ -2086,12 +2120,32 @@ function bind() {
     document.querySelectorAll('[data-detail]').forEach(el => {
       el.addEventListener('click', () => { S.detail = +el.dataset.detail; render(); });
     });
-    document.querySelectorAll('[data-view]').forEach(el => {
-      el.addEventListener('click', () => {
-        try { setViewMode(el.dataset.view); render(); window.scrollTo(0,0); }
-        catch (e) { console.error('view toggle error:', e); }
-      });
+    // Date navigation
+    const dnPrev = document.getElementById('dn-prev');
+    if (dnPrev) dnPrev.addEventListener('click', () => { shiftViewingDate(-1); render(); });
+    const dnNext = document.getElementById('dn-next');
+    if (dnNext) dnNext.addEventListener('click', () => {
+      // Block navigating past today — future days have nothing logged yet
+      if (S.viewDate && S.viewDate < todayIso()) { shiftViewingDate(1); render(); }
     });
+    const dnLabel = document.getElementById('dn-label');
+    if (dnLabel) dnLabel.addEventListener('click', () => {
+      if (S.viewDate) { S.viewDate = null; render(); }
+    });
+    const dnPicker = document.getElementById('dn-picker');
+    const dnInput = document.getElementById('dn-date-input');
+    if (dnPicker && dnInput) {
+      dnPicker.addEventListener('click', () => {
+        try { dnInput.showPicker(); }
+        catch (_) { dnInput.focus(); dnInput.click(); }
+      });
+      dnInput.addEventListener('change', () => {
+        const v = dnInput.value;
+        if (!v) return;
+        S.viewDate = (v === todayIso()) ? null : v;
+        render();
+      });
+    }
 
     // Modal triggers
     document.querySelectorAll('[data-modal]').forEach(el => {
@@ -2163,11 +2217,13 @@ function bind() {
           const pagesEl = document.getElementById('session-pages');
           const durationEl = document.getElementById('session-duration');
           const notesEl = document.getElementById('session-notes');
+          const dateEl = document.getElementById('session-date');
           if (!pagesEl || !durationEl || !notesEl) { toast('Form error', true); return; }
           const book = bookEl ? bookEl.value : '';
           const pages = pagesEl.value;
           const duration = durationEl.value;
           const notes = notesEl.value;
+          const sessionDate = dateEl ? dateEl.value : '';
           if (!pages && !duration && !notes.trim()) {
             toast('Enter pages, duration, or notes', true);
             return;
@@ -2183,12 +2239,17 @@ function bind() {
             toast('Duration must be 0–1440 min', true);
             return;
           }
-          logSession(book, pages || 0, duration || 0, notes);
+          if (sessionDate && sessionDate > todayIso()) {
+            toast('Cannot log a future date', true);
+            return;
+          }
+          logSession(book, pages || 0, duration || 0, notes, sessionDate);
           if (timerState.elapsedSec && Math.abs(+duration - Math.round(timerState.elapsedSec/60)) < 1) {
             resetTimer();
           }
           closeModal();
-          toast(pages ? `+${pages} pages logged` : 'Session logged');
+          const dateLabel = (sessionDate && sessionDate !== todayIso()) ? ` (${sessionDate})` : '';
+          toast(pages ? `+${pages} pages logged${dateLabel}` : `Session logged${dateLabel}`);
         } catch (e) { console.error('save session error:', e); toast('Save failed', true); }
       });
     }

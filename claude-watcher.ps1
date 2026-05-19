@@ -89,27 +89,55 @@ function Process-Sentinel {
   # sees an error in the log rather than a silent hang.
   $env:GIT_TERMINAL_PROMPT = '0'
 
-  # Capture stdout+stderr line by line via Start-Process redirection. This
-  # gives us a hard timeout (kill subprocess after $subprocessTimeoutSec).
-  $tmpOut = [System.IO.Path]::GetTempFileName()
-  $tmpErr = [System.IO.Path]::GetTempFileName()
-  $procArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $commitPs1, '-Message', $msg)
+  # Use System.Diagnostics.Process directly so we can:
+  #   (a) control quoting precisely (Start-Process -ArgumentList in Windows
+  #       PowerShell 5.1 splits args on whitespace, which breaks paths
+  #       containing spaces — e.g., "C:\Users\jeffe\Desktop\1 - Projects\...")
+  #   (b) wait for exit with a hard timeout and kill on overrun
+  #   (c) redirect stdout/stderr through pipes (no temp files needed)
+  #
+  # Quote escaping: in the Windows command-line argument convention used by
+  # PowerShell, a double quote inside a quoted arg is escaped as \". We
+  # replace any " in the commit message with ' to sidestep nested-quote
+  # complexity entirely — commit messages don't need literal double quotes.
+  $safeMsg = $msg -replace '"', "'"
+  $argsLine = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Message "{1}"' -f $commitPs1, $safeMsg
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $pwshExe
+  $psi.Arguments = $argsLine
+  $psi.WorkingDirectory = $repoRoot
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  $stdoutSb = New-Object System.Text.StringBuilder
+  $stderrSb = New-Object System.Text.StringBuilder
+  $outHandler = { param($s, $e) if ($e.Data -ne $null) { [void]$Event.MessageData.AppendLine($e.Data) } }
+  $errHandler = { param($s, $e) if ($e.Data -ne $null) { [void]$Event.MessageData.AppendLine($e.Data) } }
+  $outSub = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action $outHandler -MessageData $stdoutSb
+  $errSub = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived  -Action $errHandler -MessageData $stderrSb
+
   try {
-    $proc = Start-Process -FilePath $pwshExe -ArgumentList $procArgs `
-              -NoNewWindow -PassThru `
-              -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr `
-              -WorkingDirectory $repoRoot
+    [void]$proc.Start()
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
     $finished = $proc.WaitForExit($subprocessTimeoutSec * 1000)
     if (-not $finished) {
       try { $proc.Kill() } catch {}
       Log "Subprocess exceeded ${subprocessTimeoutSec}s timeout; killed. Sentinel preserved."
       return $true
     }
+    # Give the async readers a moment to drain.
+    Start-Sleep -Milliseconds 100
     $exit = $proc.ExitCode
-    # Stream the subprocess output into our log.
-    Get-Content -Path $tmpOut -ErrorAction SilentlyContinue | ForEach-Object { Log "  > $_" }
-    $errLines = Get-Content -Path $tmpErr -ErrorAction SilentlyContinue
-    if ($errLines) { $errLines | ForEach-Object { Log "  ! $_" } }
+
+    $stdoutSb.ToString() -split "`r?`n" | Where-Object { $_ } | ForEach-Object { Log "  > $_" }
+    $stderrSb.ToString() -split "`r?`n" | Where-Object { $_ } | ForEach-Object { Log "  ! $_" }
+
     if ($exit -eq 0) {
       Log "Commit OK; clearing sentinel."
       Set-Content -Path $sentinel -Value '{}' -NoNewline
@@ -117,7 +145,9 @@ function Process-Sentinel {
       Log "Commit returned exit $exit; leaving sentinel for inspection."
     }
   } finally {
-    Remove-Item -Path $tmpOut, $tmpErr -ErrorAction SilentlyContinue
+    Unregister-Event -SourceIdentifier $outSub.Name -ErrorAction SilentlyContinue
+    Unregister-Event -SourceIdentifier $errSub.Name -ErrorAction SilentlyContinue
+    if ($proc) { $proc.Dispose() }
   }
   return $true
 }

@@ -1,5 +1,5 @@
 // ============================================================================
-// app.js Ã¢â‚¬â€ Application logic, rendering, state, events
+// app.js ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Application logic, rendering, state, events
 //
 // Loaded after data.js. All curriculum data is read from globals defined in
 // data.js (T, BOOK_PROGRESS, SYNTOPIC_CLUSTERS, weekKey, etc.).
@@ -11,18 +11,18 @@
 
 'use strict';
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ VERSION Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ VERSION ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 // Auto-bumped by commit.ps1 on every commit. Visible as a small footer badge,
 // so you can hard-refresh after a commit and confirm the new code deployed
 // (if the version doesn't change, the commit didn't fire or your browser
-// served a cached file). DO NOT EDIT MANUALLY Ã¢â‚¬â€ commit.ps1 regex-replaces this
+// served a cached file). DO NOT EDIT MANUALLY ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v11 | 2026-05-18 22:55';
+const APP_VERSION = 'v12 | 2026-05-18 23:03';
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ STATE & PERSISTENCE Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ STATE & PERSISTENCE ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ VIEWING DATE (header nav + backdated log default) Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ VIEWING DATE (header nav + backdated log default) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function todayIso() {
   const d = new Date();
   const y = d.getFullYear();
@@ -49,7 +49,7 @@ function formatViewingHeader() {
   const monthIdx = dateToMonthIdx(d);
   const monthLabel = MF[monthIdx] || d.toLocaleString('en-US', { month: 'short' });
   const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
-  return `${dayName}, ${monthLabel} ${d.getDate()} Ã‚Â· W${wkOfMonth} of ${monthLabel}`;
+  return `${dayName}, ${monthLabel} ${d.getDate()} Ãƒâ€šÃ‚Â· W${wkOfMonth} of ${monthLabel}`;
 }
 const DETAIL_DESC = {1:"Topics only",2:"+ Sub-topic bars",3:"+ Current resource",4:"+ Deliverables",5:"+ Week-by-week"};
 
@@ -115,7 +115,7 @@ function savePersistent() {
   }
 }
 
-// Same as savePersistent but skips auto-sync Ã¢â‚¬â€ used by sync internals to avoid recursion
+// Same as savePersistent but skips auto-sync ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â used by sync internals to avoid recursion
 function savePersistentLocalOnly() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(P));
@@ -148,10 +148,10 @@ function resetScheduleOverride(bookKey) {
   delete P.bookEndOverrides[bookKey];
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ BOOK SCHEDULE Ã¢â€ â€™ TIMELINE OVERLAY HELPERS Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ BOOK SCHEDULE ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ TIMELINE OVERLAY HELPERS ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 // These derive "live" schedule coverage for the timeline overlay. They read
 // through getStartWeek/getEndWeek so any user-edited overrides are reflected.
-// Completed books are excluded Ã¢â‚¬â€ the overlay is meant to show *upcoming/active*
+// Completed books are excluded ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the overlay is meant to show *upcoming/active*
 // work, not history.
 
 function getTopicBookActiveMonths(topicId) {
@@ -213,7 +213,7 @@ function toggleDeliverable(topicId, subLetter, weekId) {
   savePersistent();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ SESSION LOGGING Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SESSION LOGGING ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function logSession(bookKey, pagesRead, durationMin, notes, isoDate) {
   // Default to now; if an ISO date (YYYY-MM-DD) is provided, anchor the session
   // to noon local time on that day so backdated logs slot cleanly into the streak.
@@ -261,7 +261,7 @@ function addLeverageEntry(text) {
   savePersistent();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ STATS Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ STATS ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function getSessionsInRange(daysBack) {
   const cutoff = Date.now() - daysBack * 86400000;
   return P.sessions.filter(s => s.ts >= cutoff);
@@ -301,7 +301,7 @@ function getPagesByDay(daysBack) {
   return result;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ EXPORT / IMPORT Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ EXPORT / IMPORT ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function exportState() {
   const data = JSON.stringify(P, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
@@ -340,7 +340,7 @@ function resetState() {
   toast('State reset');
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ GITHUB GIST SYNC Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ GITHUB GIST SYNC ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 //
 // Mirrors P (minus the sync config itself) to a private gist on the user's
 // GitHub account. Push is auto-debounced 2s after any state change.
@@ -373,8 +373,8 @@ async function gistFetch(url, opts = {}) {
     },
   });
   if (!res.ok) {
-    if (res.status === 401) throw new Error('Invalid token (401) Ã¢â‚¬â€ regenerate PAT with gist scope');
-    if (res.status === 404) throw new Error('Gist not found (404) Ã¢â‚¬â€ may have been deleted');
+    if (res.status === 401) throw new Error('Invalid token (401) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â regenerate PAT with gist scope');
+    if (res.status === 404) throw new Error('Gist not found (404) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â may have been deleted');
     throw new Error(`HTTP ${res.status}`);
   }
   return res.json();
@@ -393,7 +393,7 @@ async function findExistingGist() {
 }
 
 function statePayload() {
-  // Strip sync config Ã¢â‚¬â€ each device manages its own connection
+  // Strip sync config ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â each device manages its own connection
   const {sync, ...rest} = P;
   return rest;
 }
@@ -481,7 +481,7 @@ async function pullFromGist() {
   if (!P.sync.gistId) {
     const found = await findExistingGist();
     if (found) P.sync.gistId = found;
-    else throw new Error('No gist found Ã¢â‚¬â€ push first to create one');
+    else throw new Error('No gist found ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â push first to create one');
   }
   P.sync.status = 'syncing';
   P.sync.lastError = null;
@@ -505,7 +505,7 @@ async function pullFromGist() {
     P.sync.status = 'idle';
     savePersistentLocalOnly();
 
-    // Drafts file is optional Ã¢â‚¬â€ older gists may not have it
+    // Drafts file is optional ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â older gists may not have it
     const draftsFile = data.files && data.files['drafts.json'];
     if (draftsFile) {
       try {
@@ -547,11 +547,11 @@ async function connectSync(token) {
       P.sync.gistId = existingId;
       savePersistentLocalOnly();
       await pullFromGist();
-      toast('Connected Ã¢â‚¬â€ pulled existing state');
+      toast('Connected ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pulled existing state');
     } else {
-      // No gist yet Ã¢â‚¬â€ create one with current local state
+      // No gist yet ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â create one with current local state
       await pushToGist();
-      toast('Connected Ã¢â‚¬â€ created new gist');
+      toast('Connected ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â created new gist');
     }
     render();
   } catch (e) {
@@ -579,7 +579,7 @@ function updateSyncBadge() {
 
 function syncBadgeText() {
   if (!syncEnabled()) return 'Local only';
-  if (P.sync.status === 'syncing') return 'SyncingÃ¢â‚¬Â¦';
+  if (P.sync.status === 'syncing') return 'SyncingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦';
   if (P.sync.status === 'error') return 'Sync error';
   if (P.sync.lastPushAt) {
     const secs = Math.floor((Date.now() - P.sync.lastPushAt) / 1000);
@@ -597,19 +597,19 @@ function syncBadgeClass() {
   return 'ok';
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ INTAKE / DRAFT ENTRIES Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ INTAKE / DRAFT ENTRIES ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 // New resources/topics added via the "+ Add" modal.
 // They mutate BOOK_PROGRESS / T directly so the dashboard's existing pacing
 // math picks them up on the next render. Persisted to localStorage under
-// DRAFTS_KEY so they survive page reloads Ã¢â‚¬â€ committing back to data.js
+// DRAFTS_KEY so they survive page reloads ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â committing back to data.js
 // (via the patch button) is optional but recommended for portability.
 const MEDIA_TYPES = [
-  { id: 'book',     label: 'Book',                 icon: 'Ã°Å¸â€œâ€¢' },
-  { id: 'paper',    label: 'Paper / Article',      icon: 'Ã°Å¸â€œâ€ž' },
-  { id: 'guidance', label: 'Guidance / Reg doc',   icon: 'Ã°Å¸â€œâ€¹' },
-  { id: 'course',   label: 'Course',               icon: 'Ã°Å¸Å½â€œ' },
-  { id: 'video',    label: 'Video',                icon: 'Ã°Å¸Å½Â¬' },
-  { id: 'podcast',  label: 'Podcast',              icon: 'Ã°Å¸Å½Â§' },
+  { id: 'book',     label: 'Book',                 icon: 'ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã¢â‚¬Â¢' },
+  { id: 'paper',    label: 'Paper / Article',      icon: 'ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã¢â‚¬Å¾' },
+  { id: 'guidance', label: 'Guidance / Reg doc',   icon: 'ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã¢â‚¬Â¹' },
+  { id: 'course',   label: 'Course',               icon: 'ÃƒÂ°Ã…Â¸Ã…Â½Ã¢â‚¬Å“' },
+  { id: 'video',    label: 'Video',                icon: 'ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â¬' },
+  { id: 'podcast',  label: 'Podcast',              icon: 'ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â§' },
 ];
 function getMediaType(id) { return MEDIA_TYPES.find(m => m.id === id) || MEDIA_TYPES[0]; }
 
@@ -629,7 +629,7 @@ function loadDrafts() {
     if (!raw) return;
     const payload = JSON.parse(raw);
     if (!payload || !Array.isArray(payload.entries)) return;
-    // Restore topics first (so bookÃ¢â€ â€™topic refs resolve)
+    // Restore topics first (so bookÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢topic refs resolve)
     (payload.topics || []).forEach(t => {
       if (!T.find(x => x.id === t.id)) T.push(t);
     });
@@ -677,7 +677,7 @@ function dateToWeekKey(isoDate) {
 }
 
 function weekKeyToLabel(wk) {
-  if (!wk) return 'Ã¢â‚¬â€';
+  if (!wk) return 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
   const [m, w] = wk.split('-W').map(Number);
   if (isNaN(m) || isNaN(w) || m < 0 || m >= MF.length) return wk;
   return `${MF[m]} ${MY[m]} W${w}`;
@@ -708,7 +708,7 @@ function addDraftBook({ title, author, mediaType, topicId, totalPages, startWeek
     startWeek, endWeek,
     topic: +topicId,
     mediaType,
-    note: note || `Draft Ã‚Â· ${getMediaType(mediaType).label}`,
+    note: note || `Draft Ãƒâ€šÃ‚Â· ${getMediaType(mediaType).label}`,
   };
   draftEntries.push({ kind: 'book', key: safeKey });
   saveDrafts();
@@ -721,8 +721,8 @@ function addDraftTopic({ title, color }) {
     id, title,
     color: color || 'var(--text-secondary)',
     bg: 'rgba(148,163,184,0.15)',
-    scope: 'Draft topic Ã¢â‚¬â€ added via intake',
-    tf: 'Ã¢â‚¬â€', burn: 'Ã¢â‚¬â€', practice: '', notes: '',
+    scope: 'Draft topic ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â added via intake',
+    tf: 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â', burn: 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â', practice: '', notes: '',
     subs: [],
   });
   draftEntries.push({ kind: 'topic', key: id });
@@ -769,13 +769,13 @@ function generatePatch() {
   let patch = '// === Curriculum data.js patch ===\n';
   patch += '// Generated ' + new Date().toISOString() + '\n';
   patch += '// Paste each block into the matching section of data.js, then reload.\n\n';
-  if (topicSnippets) patch += '// Ã¢â€â‚¬Ã¢â€â‚¬ New topics: append inside the T = [ ... ] array Ã¢â€â‚¬Ã¢â€â‚¬\n' + topicSnippets + '\n\n';
-  if (bookSnippets)  patch += '// Ã¢â€â‚¬Ã¢â€â‚¬ New resources: append inside the BOOK_PROGRESS = { ... } object Ã¢â€â‚¬Ã¢â€â‚¬\n' + bookSnippets + '\n';
+  if (topicSnippets) patch += '// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ New topics: append inside the T = [ ... ] array ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬\n' + topicSnippets + '\n\n';
+  if (bookSnippets)  patch += '// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ New resources: append inside the BOOK_PROGRESS = { ... } object ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬\n' + bookSnippets + '\n';
   if (!topicSnippets && !bookSnippets) patch += '// (no draft entries)\n';
   return patch;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ MODAL Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MODAL ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 let modalState = null;
 
 function openModal(type, context) {
@@ -788,7 +788,7 @@ function closeModal() {
   render();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ TOAST Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TOAST ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function toast(msg, isError) {
   const el = document.createElement('div');
   el.className = 'toast';
@@ -798,7 +798,7 @@ function toast(msg, isError) {
   setTimeout(() => el.remove(), 2000);
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ SESSION TIMER Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SESSION TIMER ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 let timerState = { running: false, paused: false, startTs: 0, elapsedSec: 0, pausedAt: 0 };
 let timerInterval = null;
 
@@ -844,7 +844,7 @@ function updateTimerDisplay() {
   el.className = 'timer-display ' + (timerState.paused ? 'paused' : (timerState.running ? 'running' : ''));
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ RENDER Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ RENDER ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function isViewportNarrow() {
   try { return window.innerWidth <= 600; } catch (_) { return false; }
 }
@@ -863,16 +863,16 @@ function render() {
           <div style="flex:1;min-width:0;">
             <h1><span class="desktop-only">Personal Learning Curriculum</span><span class="mobile-only">Curriculum</span></h1>
             <div class="date-nav" role="group" aria-label="Viewing date">
-              <button class="dn-btn" id="dn-prev" title="Previous day" aria-label="Previous day">Ã¢â‚¬Â¹</button>
+              <button class="dn-btn" id="dn-prev" title="Previous day" aria-label="Previous day">ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¹</button>
               <button class="dn-label ${isViewingToday() ? 'is-today' : (getViewingIso() > todayIso() ? 'is-future' : 'is-past')}" id="dn-label" title="${isViewingToday() ? 'Viewing today' : 'Click to return to today'}">
                 <span class="dn-date">${formatViewingHeader()}</span>
-                ${!isViewingToday() ? `<span class="dn-back">Ã¢â€ Â» Today</span>` : ''}
+                ${!isViewingToday() ? `<span class="dn-back">ÃƒÂ¢Ã¢â‚¬Â Ã‚Â» Today</span>` : ''}
               </button>
-              <button class="dn-btn" id="dn-next" title="Next day" aria-label="Next day">Ã¢â‚¬Âº</button>
-              <button class="dn-btn dn-picker" id="dn-picker" title="Pick a date" aria-label="Open calendar">Ã¢â€¹Â¯</button>
+              <button class="dn-btn" id="dn-next" title="Next day" aria-label="Next day">ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âº</button>
+              <button class="dn-btn dn-picker" id="dn-picker" title="Pick a date" aria-label="Open calendar">ÃƒÂ¢Ã¢â‚¬Â¹Ã‚Â¯</button>
               <input type="date" id="dn-date-input" value="${getViewingIso()}" aria-hidden="true" tabindex="-1">
             </div>
-            <div class="sub desktop-only">Obsidian + Anki + morning block Ã‚Â· 10 topics Ã‚Â· syntopic clusters where applicable</div>
+            <div class="sub desktop-only">Obsidian + Anki + morning block Ãƒâ€šÃ‚Â· 10 topics Ãƒâ€šÃ‚Â· syntopic clusters where applicable</div>
           </div>
           <button id="sync-badge" class="sync-badge ${syncBadgeClass()}" data-modal="sync" title="Click to manage GitHub sync">${syncBadgeText()}</button>
         </div>
@@ -881,14 +881,14 @@ function render() {
           <button class="btn btn-primary" data-modal="log-session">+ Log Session</button>
           <button class="btn" data-modal="add-resource">+ Add Resource</button>
           <button class="btn" data-modal="leverage"><span class="desktop-only">+ Leverage Note</span><span class="mobile-only">+ Note</span></button>
-          <button class="btn" data-modal="timer">Ã¢ÂÂ± <span class="desktop-only">Timer</span></button>
+          <button class="btn" data-modal="timer">ÃƒÂ¢Ã‚ÂÃ‚Â± <span class="desktop-only">Timer</span></button>
           <span style="flex:1;"></span>
           <button class="btn btn-ghost btn-small" data-modal="sync">Sync</button>
           <button class="btn btn-ghost btn-small" data-modal="data">Data</button>
         </div>
         ${draftEntries.length ? `
           <div class="draft-banner">
-            <span>Ã°Å¸â€œÂ <strong>${draftEntries.length}</strong> draft ${draftEntries.length===1?'entry':'entries'} saved locally Ã¢â‚¬â€ view patch when ready to commit to data.js</span>
+            <span>ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â <strong>${draftEntries.length}</strong> draft ${draftEntries.length===1?'entry':'entries'} saved locally ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â view patch when ready to commit to data.js</span>
             <button class="btn btn-small" data-modal="patch">View patch</button>
           </div>
         ` : ''}
@@ -920,7 +920,7 @@ function render() {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ ACTIVITY ROLL (heuristic random selection) Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ACTIVITY ROLL (heuristic random selection) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 //
 // Scores each active book on four signals and weighted-random picks from
 // the top 3. Designed to feel like dice while still nudging toward
@@ -948,7 +948,7 @@ function suggestRandomActivity() {
   const HOUR = 60 * 60 * 1000;
   const last4h = P.sessions.filter(s => now - s.ts < 4 * HOUR);
   const last48h = P.sessions.filter(s => now - s.ts < 48 * HOUR);
-  // Most recent session within 48h Ã¢â‚¬â€ drives syntopic batching
+  // Most recent session within 48h ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â drives syntopic batching
   const recent = last48h.length
     ? last48h.reduce((a, b) => a.ts > b.ts ? a : b)
     : null;
@@ -982,25 +982,25 @@ function suggestRandomActivity() {
     if (gap > 0) reasons.push(`${gap} pp short of weekly target (${weeklyTarget})`);
     else if (weeklyTarget > 0 && pagesThisWeek > 0) reasons.push(`On pace this week`);
 
-    // 2. Syntopic batch Ã¢â‚¬â€ same topic as recent session (0 or 30)
+    // 2. Syntopic batch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same topic as recent session (0 or 30)
     if (recentTopic != null && b.topic === recentTopic && recent.bookKey !== k) {
       score += 30;
       const topic = T.find(t => t.id === b.topic);
-      reasons.push(`Syntopic batch Ã¢â‚¬â€ same topic as recent (#${b.topic}${topic ? ' ' + topic.title.split(' ')[0] : ''})`);
+      reasons.push(`Syntopic batch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same topic as recent (#${b.topic}${topic ? ' ' + topic.title.split(' ')[0] : ''})`);
     }
 
-    // 3. Schedule pressure (0-20) Ã¢â‚¬â€ closer deadline = higher
+    // 3. Schedule pressure (0-20) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â closer deadline = higher
     const pressureScore = Math.max(0, (8 - wkRem)) * 2.5;
     score += pressureScore;
     if (wkRem <= 2) reasons.push(`${wkRem} week${wkRem === 1 ? '' : 's'} to deadline`);
 
-    // 4. Recency penalty Ã¢â‚¬â€ read in last 4 hours (-20)
+    // 4. Recency penalty ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â read in last 4 hours (-20)
     if (last4h.some(s => s.bookKey === k)) {
       score -= 20;
-      reasons.push(`Just read Ã¢â‚¬â€ encouraging variety`);
+      reasons.push(`Just read ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â encouraging variety`);
     }
 
-    // 5. Random jitter (0-15) Ã¢â‚¬â€ keeps dice feeling like dice
+    // 5. Random jitter (0-15) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â keeps dice feeling like dice
     score += Math.random() * 15;
 
     return { key: k, book: b, score, reasons, weeklyTarget, pagesThisWeek, gap, wkRem };
@@ -1019,7 +1019,7 @@ function suggestRandomActivity() {
   return topN[topN.length - 1];
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ THIS WEEK Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ THIS WEEK ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function renderThisWeek() {
   // Reading progress for current week
   const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
@@ -1077,9 +1077,9 @@ function renderThisWeek() {
   if (weeklyTarget < 80) { loadLabel = 'LIGHT'; loadClass = 'on-track'; }
   else if (weeklyTarget < 140) { loadLabel = 'MODERATE'; loadClass = 'on-track'; }
   else if (weeklyTarget < 180) { loadLabel = 'HEAVY'; loadClass = 'behind'; }
-  else { loadLabel = 'OVERLOAD Ã¢Å¡Â '; loadClass = 'behind'; }
+  else { loadLabel = 'OVERLOAD ÃƒÂ¢Ã…Â¡Ã‚Â '; loadClass = 'behind'; }
 
-  // Suggestion Ã¢â‚¬â€ uses the SAME per-week target metric as the book progress card
+  // Suggestion ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â uses the SAME per-week target metric as the book progress card
   // for consistency. Books with no remaining-page deficit show "on pace" rather
   // than picking a "behind" book.
   let suggestion = null;
@@ -1111,7 +1111,7 @@ function renderThisWeek() {
     } catch {}
   });
   if (!suggestion && activeBooks.length > 0) {
-    // No deficit Ã¢â‚¬â€ suggest the book with most pages remaining
+    // No deficit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â suggest the book with most pages remaining
     const best = activeBooks.reduce((bestEntry, curr) => {
       const remCur = curr[1].totalPages - getCurrentPage(curr[0]);
       const remBest = bestEntry[1].totalPages - getCurrentPage(bestEntry[0]);
@@ -1132,16 +1132,16 @@ function renderThisWeek() {
   return `
     <div class="dice-row">
       <button class="dice-button" data-modal="roll" title="Roll for a study activity">
-        <span class="dice-face">Ã°Å¸Å½Â²</span>
+        <span class="dice-face">ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â²</span>
         <span class="dice-text"><span class="desktop-only">Roll for activity</span><span class="mobile-only">Roll activity</span></span>
       </button>
     </div>
     ${suggestion ? `
       <div class="suggestion-card">
-        <div class="suggestion-label">Ã¢â€“Â¶ Read Now</div>
-        <div class="suggestion-title">${escapeHtml(suggestion.book.title)} Ã¢â‚¬â€ p.${suggestion.currentPage + 1}</div>
+        <div class="suggestion-label">ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â¶ Read Now</div>
+        <div class="suggestion-title">${escapeHtml(suggestion.book.title)} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â p.${suggestion.currentPage + 1}</div>
         <div class="suggestion-detail">
-          <span class="desktop-only">Weekly target: </span><span class="mobile-only">Target: </span><strong>${suggestion.pagesPerWeek} pp</strong>${suggestion.pagesThisWeekForBook > 0 ? ` Ã‚Â· <span class="desktop-only">logged this week: </span><span class="mobile-only">done: </span>${suggestion.pagesThisWeekForBook} pp` : ''}${suggestion.weeklyGap > 0 ? ` Ã‚Â· <span style="color:var(--accent-warn);">${suggestion.weeklyGap} pp short</span>` : ' Ã‚Â· on pace'}
+          <span class="desktop-only">Weekly target: </span><span class="mobile-only">Target: </span><strong>${suggestion.pagesPerWeek} pp</strong>${suggestion.pagesThisWeekForBook > 0 ? ` Ãƒâ€šÃ‚Â· <span class="desktop-only">logged this week: </span><span class="mobile-only">done: </span>${suggestion.pagesThisWeekForBook} pp` : ''}${suggestion.weeklyGap > 0 ? ` Ãƒâ€šÃ‚Â· <span style="color:var(--accent-warn);">${suggestion.weeklyGap} pp short</span>` : ' Ãƒâ€šÃ‚Â· on pace'}
         </div>
         <button class="btn btn-primary btn-small" data-modal="log-session" data-book="${suggestion.key}"><span class="desktop-only">+ Log Session for This</span><span class="mobile-only">+ Log This</span></button>
       </div>
@@ -1154,19 +1154,19 @@ function renderThisWeek() {
         <div class="stat-sub desktop-only">consecutive study days</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Pages Ã‚Â· 7d</div>
+        <div class="stat-label">Pages Ãƒâ€šÃ‚Â· 7d</div>
         <div class="stat-value">${pagesThisWeek}<span style="font-size:11px;color:var(--text-muted);font-weight:400;"> / ~${weeklyTarget}</span></div>
-        <div class="stat-sub"><span class="desktop-only">target this week Ã‚Â· </span><span class="rp-pace ${loadClass}" style="padding:1px 5px;font-size:9px;">${loadLabel}</span></div>
+        <div class="stat-sub"><span class="desktop-only">target this week Ãƒâ€šÃ‚Â· </span><span class="rp-pace ${loadClass}" style="padding:1px 5px;font-size:9px;">${loadLabel}</span></div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Sessions Ã‚Â· 7d</div>
+        <div class="stat-label">Sessions Ãƒâ€šÃ‚Â· 7d</div>
         <div class="stat-value">${sessionsThisWeek}</div>
         <div class="stat-sub">${minThisWeek} min<span class="desktop-only"> total</span></div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Books Active</div>
         <div class="stat-value">${activeBooks.length}</div>
-        <div class="stat-sub"><span class="desktop-only">${Object.keys(P.bookCompleted).length} completed Ã‚Â· ${upcomingBooks.length} upcoming</span><span class="mobile-only">${Object.keys(P.bookCompleted).length}Ã¢Å“â€œ Ã‚Â· ${upcomingBooks.length}Ã¢â€ â€”</span></div>
+        <div class="stat-sub"><span class="desktop-only">${Object.keys(P.bookCompleted).length} completed Ãƒâ€šÃ‚Â· ${upcomingBooks.length} upcoming</span><span class="mobile-only">${Object.keys(P.bookCompleted).length}ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Ãƒâ€šÃ‚Â· ${upcomingBooks.length}ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â€</span></div>
       </div>
     </div>
 
@@ -1178,15 +1178,15 @@ function renderThisWeek() {
       ${renderStreakGrid()}
     </div>
 
-    <div class="sec-title"><span class="desktop-only">Active Reading Ã¢â‚¬â€ This Week's Pace</span><span class="mobile-only">Active Reading</span></div>
+    <div class="sec-title"><span class="desktop-only">Active Reading ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â This Week's Pace</span><span class="mobile-only">Active Reading</span></div>
     ${activeBooks.length === 0 ? `<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px;border:1px dashed var(--border);border-radius:6px;">No active books this week. ${upcomingBooks.length ? 'See upcoming books below.' : ''}</div>` : activeBooks.map(([k,b]) => renderBookProgress(k, b)).join('')}
 
     ${upcomingBooks.length > 0 ? `
-      <div class="sec-title"><span class="desktop-only">Upcoming Ã¢â‚¬â€ Starts in Next 4 Weeks</span><span class="mobile-only">Upcoming (4 wks)</span></div>
+      <div class="sec-title"><span class="desktop-only">Upcoming ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Starts in Next 4 Weeks</span><span class="mobile-only">Upcoming (4 wks)</span></div>
       ${upcomingBooks.map(([k,b]) => renderBookProgress(k, b)).join('')}
     ` : ''}
 
-    <div class="sec-title"><span class="desktop-only">Syntopic Reading Clusters Ã¢â‚¬â€ Active</span><span class="mobile-only">Active Clusters</span></div>
+    <div class="sec-title"><span class="desktop-only">Syntopic Reading Clusters ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Active</span><span class="mobile-only">Active Clusters</span></div>
     ${getActiveClusters().map(({c, color}) => renderCluster(c, color)).join('')}
   `;
 }
@@ -1250,7 +1250,7 @@ function renderBookProgress(bookKey, book) {
     endIdx = em * 4 + ew;
     startIdx = sm * 4 + sw;
   } catch (e) {
-    return `<div class="reading-progress">Ã¢Å¡Â  Invalid scheduling for ${escapeHtml(book.title || bookKey)}</div>`;
+    return `<div class="reading-progress">ÃƒÂ¢Ã…Â¡Ã‚Â  Invalid scheduling for ${escapeHtml(book.title || bookKey)}</div>`;
   }
 
   const isComplete = isBookComplete(bookKey);
@@ -1268,7 +1268,7 @@ function renderBookProgress(bookKey, book) {
 
   let paceLabel, paceClass;
   if (isComplete) {
-    paceLabel = 'COMPLETE Ã¢Å“â€œ';
+    paceLabel = 'COMPLETE ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“';
     paceClass = 'ahead';
   } else if (!hasStarted) {
     paceLabel = 'UPCOMING';
@@ -1286,9 +1286,9 @@ function renderBookProgress(bookKey, book) {
   }
 
   const topicColor = `var(--t${book.topic || 2})`;
-  const scheduleLabel = hasStarted ? `Active Ã‚Â· ends ${weekLabel(endWeek)}` : `Starts ${weekLabel(startWeek)}`;
+  const scheduleLabel = hasStarted ? `Active Ãƒâ€šÃ‚Â· ends ${weekLabel(endWeek)}` : `Starts ${weekLabel(startWeek)}`;
 
-  const goalText = isComplete ? 'Done Ã¢â‚¬â€ pick the next book.'
+  const goalText = isComplete ? 'Done ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pick the next book.'
     : !hasStarted ? `Begins ${weekLabel(startWeek)} (${diffWeeks(curIdx, startIdx)} weeks from now)`
     : `read ~${pagesPerWeek} pages (${remaining} pp over ${weeksRemaining} weeks)`;
 
@@ -1296,13 +1296,13 @@ function renderBookProgress(bookKey, book) {
     <div style="margin-top:8px;padding:8px 10px;background:var(--bg-card);border-radius:4px;border-left:2px solid ${topicColor};">
       <details>
         <summary style="cursor:pointer;font-size:10px;font-family:'DM Mono',monospace;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.06em;">
-          Priority cut Ã‚Â· ${book.priorityChapters.length} ch Ã‚Â· ${book.priorityTotalPages || totalPages} pp${book.skipChapters ? ` Ã‚Â· ${book.skipChapters.length} skipped` : ''}
+          Priority cut Ãƒâ€šÃ‚Â· ${book.priorityChapters.length} ch Ãƒâ€šÃ‚Â· ${book.priorityTotalPages || totalPages} pp${book.skipChapters ? ` Ãƒâ€šÃ‚Â· ${book.skipChapters.length} skipped` : ''}
         </summary>
         <div style="margin-top:6px;display:flex;flex-direction:column;gap:3px;">
           ${book.priorityChapters.map(c => `
             <div style="display:flex;justify-content:space-between;gap:8px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text-secondary);">
               <span>Ch.${c.ch} ${escapeHtml(c.name)}</span>
-              <span style="color:var(--text-muted);">pp.${escapeHtml(c.pages)} Ã‚Â· ${c.count}</span>
+              <span style="color:var(--text-muted);">pp.${escapeHtml(c.pages)} Ãƒâ€šÃ‚Â· ${c.count}</span>
             </div>
           `).join('')}
           ${book.secondaryChapters && book.secondaryChapters.length ? `
@@ -1310,7 +1310,7 @@ function renderBookProgress(bookKey, book) {
             ${book.secondaryChapters.map(c => `
               <div style="display:flex;justify-content:space-between;gap:8px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text-dim);">
                 <span>Ch.${c.ch} ${escapeHtml(c.name)}</span>
-                <span>pp.${escapeHtml(c.pages)} Ã‚Â· ${c.count}</span>
+                <span>pp.${escapeHtml(c.pages)} Ãƒâ€šÃ‚Â· ${c.count}</span>
               </div>
             `).join('')}
           ` : ''}
@@ -1324,13 +1324,13 @@ function renderBookProgress(bookKey, book) {
       <div class="rp-head">
         <div>
           <div class="rp-title">${escapeHtml(book.title)}</div>
-          <div class="rp-author">${escapeHtml(book.author || '')}${book.note ? ' Ã‚Â· ' + escapeHtml(book.note) : ''}</div>
+          <div class="rp-author">${escapeHtml(book.author || '')}${book.note ? ' Ãƒâ€šÃ‚Â· ' + escapeHtml(book.note) : ''}</div>
           <div style="font-size:9px;font-family:'DM Mono',monospace;color:var(--text-muted);margin-top:2px;">${scheduleLabel}</div>
         </div>
         <div class="rp-stats">${currentPage} / ${totalPages} pp</div>
       </div>
       <div class="rp-bar"><div class="rp-bar-fill" style="width:${pct}%;background:${topicColor};"></div></div>
-      <div class="rp-week-goal" title="Weekly target = remaining pages ÃƒÂ· weeks remaining until target end date. Edit the book to push the end date if pace shifts.">
+      <div class="rp-week-goal" title="Weekly target = remaining pages ÃƒÆ’Ã‚Â· weeks remaining until target end date. Edit the book to push the end date if pace shifts.">
         <span><strong>This week:</strong> ${goalText}</span>
         <span class="rp-pace ${paceClass}">${paceLabel}</span>
       </div>
@@ -1345,7 +1345,7 @@ function renderBookProgress(bookKey, book) {
 }
 
 function weekLabel(wk) {
-  if (!wk) return 'Ã¢â‚¬â€';
+  if (!wk) return 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
   try {
     const [m,w] = wk.split('-W').map(Number);
     if (isNaN(m)||isNaN(w)||m<0||m>=MF.length) return wk;
@@ -1361,7 +1361,7 @@ function renderCluster(cluster, color) {
   return `
     <div class="cluster-box" style="border-left:3px solid ${color};">
       <div class="cluster-title" style="color:${color};">${cluster.title}</div>
-      <div class="cluster-desc">${cluster.desc} <span style="color:var(--text-dim);">Ã‚Â· ${cluster.span}</span></div>
+      <div class="cluster-desc">${cluster.desc} <span style="color:var(--text-dim);">Ãƒâ€šÃ‚Â· ${cluster.span}</span></div>
       <div class="cluster-items">
         ${cluster.items.map(i => `
           <div class="cluster-item">
@@ -1374,7 +1374,7 @@ function renderCluster(cluster, color) {
   `;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ TIMELINE Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TIMELINE ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function renderTimeline() {
   return `
     <div class="controls">
@@ -1392,7 +1392,7 @@ function renderTimeline() {
         <span class="detail-desc">${DETAIL_DESC[S.detail]}</span>
       </div>
       <div class="control-group"><span class="control-label">Overlay</span><div class="toggle-group">
-        <button class="toggle-btn ${S.bookOverlay?'active':''}" data-overlay="books" title="Show live book schedules (from current start/end, reflects edits)">Ã°Å¸â€œÅ¡ Books</button>
+        <button class="toggle-btn ${S.bookOverlay?'active':''}" data-overlay="books" title="Show live book schedules (from current start/end, reflects edits)">ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã…Â¡ Books</button>
       </div></div>
     </div>
     ${gantt()}
@@ -1455,7 +1455,7 @@ function monthlyGantt(fT) {
           if (S.detail >= 4) {
             bodyRows += `<td class="g-label sub">${escapeHtml(truncate(getCurrentDeliverable(s), 35))}</td>`;
           }
-          // Topic-scoped overlay shows on the FIRST sub-topic row only Ã¢â‚¬â€ same
+          // Topic-scoped overlay shows on the FIRST sub-topic row only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same
           // info repeated on every row of a topic would be visual noise.
           const showOverlayHere = bookMonths && si === 0;
           for (let m = 0; m < 14; m++) {
@@ -1495,9 +1495,9 @@ function monthlyGantt(fT) {
           bodyRows += `<td class="g-label sub" style="font-style:italic;font-size:10px;">${escapeHtml(s.f||'')}</td>`;
           const moStart = sMo.length ? (MF[sMo[0]] || '?') : '?';
           const moEnd = sMo.length ? (MF[sMo[sMo.length-1]] || '?') : '?';
-          bodyRows += `<td class="g-label sub" style="font-size:9px;font-family:'DM Mono',monospace;color:var(--text-muted);">${moStart} Ã¢â‚¬â€œ ${moEnd}</td>`;
+          bodyRows += `<td class="g-label sub" style="font-size:9px;font-family:'DM Mono',monospace;color:var(--text-muted);">${moStart} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ ${moEnd}</td>`;
           // Show book overlay only on the FIRST sub-topic header row of the topic
-          // (si === 0). Per-week rows below skip the overlay Ã¢â‚¬â€ it would just
+          // (si === 0). Per-week rows below skip the overlay ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it would just
           // smear a topic-scoped indicator across every individual week.
           const showOverlayHere = bookMonths && si === 0;
           for (let m = 0; m < 14; m++) {
@@ -1520,7 +1520,7 @@ function monthlyGantt(fT) {
             } catch { wkMonth = -1; }
 
             bodyRows += `<tr style="${isCurrent ? 'background:rgba(16,185,129,0.05);' : ''}">`;
-            bodyRows += `<td class="g-label sub" style="padding-left:28px!important;font-family:'DM Mono',monospace;font-size:9px;color:${isCurrent?'var(--accent-good)':'var(--text-dim)'};">${escapeHtml(wk.w||'')}${isCurrent ? ' Ã¢â€”â‚¬' : ''}</td>`;
+            bodyRows += `<td class="g-label sub" style="padding-left:28px!important;font-family:'DM Mono',monospace;font-size:9px;color:${isCurrent?'var(--accent-good)':'var(--text-dim)'};">${escapeHtml(wk.w||'')}${isCurrent ? ' ÃƒÂ¢Ã¢â‚¬â€Ã¢â€šÂ¬' : ''}</td>`;
             bodyRows += `<td class="g-label sub" style="font-size:10px;">${escapeHtml(truncate(wk.res||'', 40))}</td>`;
             bodyRows += `<td class="g-label sub" style="font-size:10px;">${escapeHtml(truncate(wk.del||'', 35))}</td>`;
             for (let m = 0; m < 14; m++) {
@@ -1542,7 +1542,7 @@ function monthlyGantt(fT) {
 
 function weeklyGantt(fT) {
   try {
-    // 6 months Ãƒâ€” 4 weeks = 24 columns
+    // 6 months ÃƒÆ’Ã¢â‚¬â€ 4 weeks = 24 columns
     let weeks = [];
     for (let m = 0; m < 6; m++) for (let w = 1; w <= 4; w++) weeks.push({m, w});
 
@@ -1625,32 +1625,32 @@ function weeklyGantt(fT) {
 }
 
 function getCurrentResource(sub) {
-  if (!sub) return 'Ã¢â‚¬â€';
+  if (!sub) return 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
   const weeks = Array.isArray(sub.weeks) ? sub.weeks : [];
   const cw = weeks.find(w => w && w.wk === CURRENT_WEEK_KEY);
-  if (cw) return cw.res || 'Ã¢â‚¬â€';
+  if (cw) return cw.res || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
   const cm = weeks.find(w => w && typeof w.wk === 'string' && w.wk.startsWith(CURRENT_MONTH_IDX + '-'));
-  if (cm) return cm.res || 'Ã¢â‚¬â€';
-  return (weeks[0] && weeks[0].res) ? weeks[0].res : 'Ã¢â‚¬â€';
+  if (cm) return cm.res || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
+  return (weeks[0] && weeks[0].res) ? weeks[0].res : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
 }
 
 function getCurrentDeliverable(sub) {
-  if (!sub) return 'Ã¢â‚¬â€';
+  if (!sub) return 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
   const weeks = Array.isArray(sub.weeks) ? sub.weeks : [];
   const cw = weeks.find(w => w && w.wk === CURRENT_WEEK_KEY);
-  if (cw) return cw.del || 'Ã¢â‚¬â€';
+  if (cw) return cw.del || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
   const cm = weeks.find(w => w && typeof w.wk === 'string' && w.wk.startsWith(CURRENT_MONTH_IDX + '-'));
-  if (cm) return cm.del || 'Ã¢â‚¬â€';
-  return (weeks[0] && weeks[0].del) ? weeks[0].del : 'Ã¢â‚¬â€';
+  if (cm) return cm.del || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
+  return (weeks[0] && weeks[0].del) ? weeks[0].del : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
 }
 
 function truncate(s, n) {
   if (s === null || s === undefined) return '';
   const str = String(s);
-  return str.length > n ? str.slice(0, n) + 'Ã¢â‚¬Â¦' : str;
+  return str.length > n ? str.slice(0, n) + 'ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦' : str;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ TOPIC PANEL Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TOPIC PANEL ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function renderTopicPanel(t) {
   try {
     if (!t || !t.id) return `<div style="padding:20px;color:var(--accent-bad);">Topic not found.</div>`;
@@ -1698,7 +1698,7 @@ function renderTopicPanel(t) {
           <div style="flex:1;">
             <div class="sub-name">${escapeHtml(s.n || '')}</div>
             <div class="sub-focus">${escapeHtml(s.f || '')}</div>
-            <div class="sub-timing">${startMo} ${startYr}${sMo.length>1?' Ã¢â‚¬â€œ '+endMo+' '+endYr:''}</div>
+            <div class="sub-timing">${startMo} ${startYr}${sMo.length>1?' ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ '+endMo+' '+endYr:''}</div>
           </div>
         </div>
       `;}).join("")}
@@ -1711,7 +1711,7 @@ function renderTopicPanel(t) {
       <div class="sec-title" style="color:${t.color}">Study Plan</div>
       <div class="plan-wrap">
       <table class="plan-table">
-        <thead><tr><th style="width:36px;">Ã¢Å“â€œ</th><th style="width:90px;">When</th><th style="width:50px;">Sub</th><th>Focus</th><th>Resource</th><th style="width:80px;">Pages</th><th>Deliverable</th></tr></thead>
+        <thead><tr><th style="width:36px;">ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“</th><th style="width:90px;">When</th><th style="width:50px;">Sub</th><th>Focus</th><th>Resource</th><th style="width:80px;">Pages</th><th>Deliverable</th></tr></thead>
         <tbody>
           ${subs.map(s=>{
             if (!s) return '';
@@ -1722,11 +1722,11 @@ function renderTopicPanel(t) {
               return `
               <tr class="${w.wk === CURRENT_WEEK_KEY ? 'current-week' : ''}" style="${done?'opacity:0.55;':''}">
                 <td style="text-align:center;"><input type="checkbox" ${done?'checked':''} data-deliverable="${t.id}|${escapeHtml(s.l||'')}|${escapeHtml(w.wk||'')}" style="accent-color:var(--accent-good);cursor:pointer;"></td>
-                <td class="plan-week">${escapeHtml(w.w||'')}${w.wk === CURRENT_WEEK_KEY ? ' Ã¢â€”â‚¬' : ''}</td>
+                <td class="plan-week">${escapeHtml(w.w||'')}${w.wk === CURRENT_WEEK_KEY ? ' ÃƒÂ¢Ã¢â‚¬â€Ã¢â€šÂ¬' : ''}</td>
                 <td><span class="plan-sub" style="background:${t.bg};color:${t.color};">${escapeHtml(s.l||'')}</span></td>
                 <td class="plan-focus" style="${done?'text-decoration:line-through;':''}">${escapeHtml(w.focus||'')}</td>
                 <td class="plan-resource">${escapeHtml(w.res||'')}</td>
-                <td class="plan-pages">${escapeHtml(w.pages || 'Ã¢â‚¬â€')}</td>
+                <td class="plan-pages">${escapeHtml(w.pages || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â')}</td>
                 <td class="plan-deliverable">${escapeHtml(w.del||'')}</td>
               </tr>
             `;}).join("");
@@ -1760,7 +1760,7 @@ function renderTopicPanel(t) {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ LOG TAB Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ LOG TAB ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function renderLog() {
   const sessions = [...P.sessions].sort((a,b) => b.ts - a.ts);
   const totalPages = sessions.reduce((s,x) => s + (x.pagesRead || 0), 0);
@@ -1805,9 +1805,9 @@ function renderLog() {
           <div class="log-entry-head">
             <div>
               <div class="log-entry-book">${book ? book.title : (s.bookKey || 'General study')}</div>
-              <div class="log-entry-meta">${date.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} Ã‚Â· ${date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})} Ã‚Â· ${s.pagesRead || 0} pp Ã‚Â· ${s.durationMin || 0} min</div>
+              <div class="log-entry-meta">${date.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} Ãƒâ€šÃ‚Â· ${date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})} Ãƒâ€šÃ‚Â· ${s.pagesRead || 0} pp Ãƒâ€šÃ‚Â· ${s.durationMin || 0} min</div>
             </div>
-            <button class="btn btn-small btn-ghost btn-danger" data-delete-session="${P.sessions.indexOf(s)}" title="Delete session">Ãƒâ€”</button>
+            <button class="btn btn-small btn-ghost btn-danger" data-delete-session="${P.sessions.indexOf(s)}" title="Delete session">ÃƒÆ’Ã¢â‚¬â€</button>
           </div>
           ${s.notes ? `<div class="log-entry-notes">${escapeHtml(s.notes)}</div>` : ''}
         </div>
@@ -1837,7 +1837,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ MODAL Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MODAL ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function renderModal() {
   if (!modalState) return '';
   try {
@@ -1860,7 +1860,7 @@ function renderModal() {
       <div class="form-group">
         <label class="form-label">Book / Resource</label>
         <select class="form-select" id="session-book">
-          <option value="">Ã¢â‚¬â€ General / Notes only Ã¢â‚¬â€</option>
+          <option value="">ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â General / Notes only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â</option>
           ${activeBooks.map(([k,b]) => `<option value="${k}" ${k===preselectBook?'selected':''}>${b.title} (p.${getCurrentPage(k)+1} / ${b.totalPages})</option>`).join('')}
         </select>
       </div>
@@ -1891,7 +1891,7 @@ function renderModal() {
       <button class="btn btn-primary" id="save-session">Save Session</button>
     `;
   } else if (type === 'roll') {
-    title = 'Ã°Å¸Å½Â² Activity Roll';
+    title = 'ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â² Activity Roll';
     // Cache the roll in modal context so re-render doesn't re-pick on every keystroke
     if (!modalState.context || !modalState.context.rolled) {
       modalState.context = { ...modalState.context, rolled: suggestRandomActivity() };
@@ -1912,8 +1912,8 @@ function renderModal() {
           <div class="roll-pick-eyebrow">The dice picked</div>
           <div class="roll-pick-title">${escapeHtml(rolled.book.title)}</div>
           <div class="roll-pick-meta">
-            <span style="color:${topicColor};">#${rolled.book.topic} Ã‚Â· ${escapeHtml(topic ? topic.title : '')}</span>
-            Ã‚Â· Continue from <strong>p.${getCurrentPage(rolled.key) + 1}</strong>
+            <span style="color:${topicColor};">#${rolled.book.topic} Ãƒâ€šÃ‚Â· ${escapeHtml(topic ? topic.title : '')}</span>
+            Ãƒâ€šÃ‚Â· Continue from <strong>p.${getCurrentPage(rolled.key) + 1}</strong>
           </div>
         </div>
         <div class="roll-reasons">
@@ -1923,7 +1923,7 @@ function renderModal() {
           </ul>
         </div>
         <div style="text-align:center;margin:10px 0 14px;">
-          <button class="btn btn-small" id="roll-again">Ã°Å¸Å½Â² Re-roll</button>
+          <button class="btn btn-small" id="roll-again">ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â² Re-roll</button>
         </div>
         <div style="border-top:1px solid var(--border);padding-top:14px;">
           <div class="form-row">
@@ -2001,10 +2001,10 @@ function renderModal() {
         </div>
         <div style="font-size:11px;color:var(--text-muted);padding:8px 12px;background:var(--bg-card);border-radius:4px;margin-top:8px;font-family:'DM Mono',monospace;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
           <div>
-            <div>Start default: ${escapeHtml(book.startWeek)}${startOverridden ? ` Ã¢â€ â€™ <span style="color:var(--accent-warn);">${escapeHtml(startWeek)}</span>` : ''}</div>
-            <div>End default: ${escapeHtml(book.endWeek)}${endOverridden ? ` Ã¢â€ â€™ <span style="color:var(--accent-warn);">${escapeHtml(endWeek)}</span>` : ''}</div>
+            <div>Start default: ${escapeHtml(book.startWeek)}${startOverridden ? ` ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ <span style="color:var(--accent-warn);">${escapeHtml(startWeek)}</span>` : ''}</div>
+            <div>End default: ${escapeHtml(book.endWeek)}${endOverridden ? ` ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ <span style="color:var(--accent-warn);">${escapeHtml(endWeek)}</span>` : ''}</div>
           </div>
-          ${anyOverride ? `<button type="button" class="btn btn-small btn-ghost" id="edit-reset" data-book="${k}" title="Clear both start and end overrides">Ã¢â€ Âº Reset to default</button>` : ''}
+          ${anyOverride ? `<button type="button" class="btn btn-small btn-ghost" id="edit-reset" data-book="${k}" title="Clear both start and end overrides">ÃƒÂ¢Ã¢â‚¬Â Ã‚Âº Reset to default</button>` : ''}
         </div>
       `;
       footer = `
@@ -2020,8 +2020,8 @@ function renderModal() {
       </div>
       <div style="display:flex;gap:8px;justify-content:center;margin-top:12px;">
         ${!timerState.running ?
-          `<button class="btn btn-primary" id="timer-start">Ã¢â€“Â¶ Start</button>` :
-          `<button class="btn" id="timer-pause">${timerState.paused ? 'Ã¢â€“Â¶ Resume' : 'Ã¢ÂÂ¸ Pause'}</button>`
+          `<button class="btn btn-primary" id="timer-start">ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â¶ Start</button>` :
+          `<button class="btn" id="timer-pause">${timerState.paused ? 'ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â¶ Resume' : 'ÃƒÂ¢Ã‚ÂÃ‚Â¸ Pause'}</button>`
         }
         <button class="btn" id="timer-reset">Reset</button>
         <button class="btn btn-primary" id="timer-log">Log as Session</button>
@@ -2050,28 +2050,28 @@ function renderModal() {
         <div class="form-help">Erases all sessions, page progress, leverage entries, and completion marks. Cannot be undone.</div>
       </div>
       <div style="font-size:10px;color:var(--text-muted);font-family:'DM Mono',monospace;margin-top:14px;padding:10px;background:var(--bg-card);border-radius:4px;">
-        Sessions: ${P.sessions.length} Ã‚Â· Pages logged: ${P.sessions.reduce((s,x)=>s+(x.pagesRead||0),0)} Ã‚Â· Books complete: ${Object.keys(P.bookCompleted).length} Ã‚Â· Leverage notes: ${P.leverageLog.length}
+        Sessions: ${P.sessions.length} Ãƒâ€šÃ‚Â· Pages logged: ${P.sessions.reduce((s,x)=>s+(x.pagesRead||0),0)} Ãƒâ€šÃ‚Â· Books complete: ${Object.keys(P.bookCompleted).length} Ãƒâ€šÃ‚Â· Leverage notes: ${P.leverageLog.length}
       </div>
     `;
     footer = `<button class="btn" onclick="closeModal()">Close</button>`;
   } else if (type === 'sync') {
     title = 'GitHub Sync';
     const connected = syncEnabled();
-    const lastPushLabel = P.sync.lastPushAt ? new Date(P.sync.lastPushAt).toLocaleString() : 'Ã¢â‚¬â€';
-    const lastPullLabel = P.sync.lastPullAt ? new Date(P.sync.lastPullAt).toLocaleString() : 'Ã¢â‚¬â€';
+    const lastPushLabel = P.sync.lastPushAt ? new Date(P.sync.lastPushAt).toLocaleString() : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
+    const lastPullLabel = P.sync.lastPullAt ? new Date(P.sync.lastPullAt).toLocaleString() : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â';
     body = connected ? `
       <div style="padding:10px 12px;background:var(--bg-card);border-radius:5px;border-left:3px solid var(--accent-good);margin-bottom:14px;">
         <div style="font-size:11px;font-family:'DM Mono',monospace;color:var(--accent-good);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Connected</div>
-        <div style="font-size:12px;">Gist ID: <code style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-secondary);">${escapeHtml(P.sync.gistId || '(creatingÃ¢â‚¬Â¦)')}</code></div>
+        <div style="font-size:12px;">Gist ID: <code style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-secondary);">${escapeHtml(P.sync.gistId || '(creatingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦)')}</code></div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-family:'DM Mono',monospace;">
           Last push: ${lastPushLabel}<br>
           Last pull: ${lastPullLabel}<br>
-          Status: ${P.sync.status}${P.sync.lastError ? ' Ã¢â‚¬â€ ' + escapeHtml(P.sync.lastError) : ''}
+          Status: ${P.sync.status}${P.sync.lastError ? ' ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ' + escapeHtml(P.sync.lastError) : ''}
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-primary" id="sync-push" style="flex:1;">Ã¢â€ â€˜ Push Now</button>
-        <button class="btn" id="sync-pull" style="flex:1;">Ã¢â€ â€œ Pull Now</button>
+        <button class="btn btn-primary" id="sync-push" style="flex:1;">ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Ëœ Push Now</button>
+        <button class="btn" id="sync-pull" style="flex:1;">ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Å“ Pull Now</button>
       </div>
       <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
         <button class="btn btn-danger" id="sync-disconnect" style="width:100%;">Disconnect</button>
@@ -2084,11 +2084,11 @@ function renderModal() {
       <div style="font-size:12px;line-height:1.5;color:var(--text-secondary);margin-bottom:14px;">
         Sync your progress and draft resources across devices via a private GitHub Gist. Create a Personal Access Token with <strong>only</strong> the <code style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-primary);background:var(--bg-card);padding:1px 4px;border-radius:2px;">gist</code> scope:
       </div>
-      <a href="https://github.com/settings/tokens/new?description=Curriculum%20Dashboard&scopes=gist" target="_blank" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;margin-bottom:14px;">Ã¢â€ â€™ Create PAT on GitHub</a>
+      <a href="https://github.com/settings/tokens/new?description=Curriculum%20Dashboard&scopes=gist" target="_blank" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;margin-bottom:14px;">ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Create PAT on GitHub</a>
       <div class="form-group">
         <label class="form-label">Paste Token</label>
         <input type="password" class="form-input" id="sync-token-input" placeholder="ghp_..." autocomplete="off" style="font-family:'DM Mono',monospace;">
-        <div class="form-help">Stored in localStorage on this device. Has gist scope only Ã¢â‚¬â€ cannot access repos or account settings.</div>
+        <div class="form-help">Stored in localStorage on this device. Has gist scope only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â cannot access repos or account settings.</div>
       </div>
       ${P.sync.lastError ? `<div style="padding:8px 10px;background:var(--accent-bad)15;border-left:2px solid var(--accent-bad);border-radius:0 4px 4px 0;font-size:11px;color:var(--accent-bad);margin-bottom:10px;">Last error: ${escapeHtml(P.sync.lastError)}</div>` : ''}
     `;
@@ -2134,15 +2134,15 @@ function renderModal() {
         <div class="form-group">
           <label class="form-label">Length (pages / units)</label>
           <input type="number" class="form-input" id="ar-pages" min="1" placeholder="e.g. 80" value="${escapeHtml(ctx.totalPages || '')}">
-          <div class="form-help desktop-only">For video/podcast/course, use approximate page-equivalents (e.g. 1 page Ã¢â€°Ë† 3 min)</div>
+          <div class="form-help desktop-only">For video/podcast/course, use approximate page-equivalents (e.g. 1 page ÃƒÂ¢Ã¢â‚¬Â°Ã‹â€  3 min)</div>
         </div>
       </div>
 
       <div class="form-group">
         <label class="form-label">Topic</label>
         <select class="form-select" id="ar-topic">
-          ${T.map(t => `<option value="${t.id}" ${String(t.id)===String(ctx.topicChoice)?'selected':''}>#${t.id} Ã‚Â· ${escapeHtml(t.title)}</option>`).join('')}
-          <option value="new" ${addingNewTopic?'selected':''}>+ New topicÃ¢â‚¬Â¦</option>
+          ${T.map(t => `<option value="${t.id}" ${String(t.id)===String(ctx.topicChoice)?'selected':''}>#${t.id} Ãƒâ€šÃ‚Â· ${escapeHtml(t.title)}</option>`).join('')}
+          <option value="new" ${addingNewTopic?'selected':''}>+ New topicÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦</option>
         </select>
       </div>
 
@@ -2156,7 +2156,7 @@ function renderModal() {
           <div class="form-group">
             <label class="form-label">Color (CSS)</label>
             <input type="text" class="form-input" id="ar-newcolor" placeholder="#a78bfa" value="${escapeHtml(ctx.newTopicColor || '')}">
-            <div class="form-help">Optional Ã‚Â· default muted</div>
+            <div class="form-help">Optional Ãƒâ€šÃ‚Â· default muted</div>
           </div>
         </div>
       ` : ''}
@@ -2208,7 +2208,7 @@ function renderModal() {
         <div class="modal" onclick="event.stopPropagation()">
           <div class="modal-head">
             <div class="modal-title">${title}</div>
-            <button class="modal-close" onclick="closeModal()">Ãƒâ€”</button>
+            <button class="modal-close" onclick="closeModal()">ÃƒÆ’Ã¢â‚¬â€</button>
           </div>
           <div class="modal-body">${body}</div>
           <div class="modal-foot">${footer}</div>
@@ -2217,7 +2217,7 @@ function renderModal() {
     `;
   } catch (e) {
     console.error('renderModal error:', e);
-    return `<div class="modal-backdrop" id="modal-backdrop"><div class="modal"><div class="modal-head"><div class="modal-title">Error</div><button class="modal-close" onclick="closeModal()">Ãƒâ€”</button></div><div class="modal-body" style="color:var(--accent-bad);font-size:12px;">Modal failed: ${escapeHtml(e.message)}</div></div></div>`;
+    return `<div class="modal-backdrop" id="modal-backdrop"><div class="modal"><div class="modal-head"><div class="modal-title">Error</div><button class="modal-close" onclick="closeModal()">ÃƒÆ’Ã¢â‚¬â€</button></div><div class="modal-body" style="color:var(--accent-bad);font-size:12px;">Modal failed: ${escapeHtml(e.message)}</div></div></div>`;
   }
 }
 
@@ -2233,7 +2233,7 @@ function generateWeekOptions(selected) {
   return opts;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ EVENTS Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ EVENTS ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function bind() {
   try {
     document.querySelectorAll('[data-tab]').forEach(el => {
@@ -2366,12 +2366,12 @@ function bind() {
           // Validate pages is reasonable
           const pageNum = +pages;
           if (pages && (isNaN(pageNum) || pageNum < 0 || pageNum > 5000)) {
-            toast('Pages must be 0Ã¢â‚¬â€œ5000', true);
+            toast('Pages must be 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“5000', true);
             return;
           }
           const durNum = +duration;
           if (duration && (isNaN(durNum) || durNum < 0 || durNum > 1440)) {
-            toast('Duration must be 0Ã¢â‚¬â€œ1440 min', true);
+            toast('Duration must be 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“1440 min', true);
             return;
           }
           if (sessionDate && sessionDate > todayIso()) {
@@ -2418,18 +2418,18 @@ function bind() {
           }
           const pageNum = +pages;
           if (pages && (isNaN(pageNum) || pageNum < 0 || pageNum > 5000)) {
-            toast('Pages must be 0Ã¢â‚¬â€œ5000', true); return;
+            toast('Pages must be 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“5000', true); return;
           }
           const durNum = +duration;
           if (duration && (isNaN(durNum) || durNum < 0 || durNum > 1440)) {
-            toast('Duration must be 0Ã¢â‚¬â€œ1440 min', true); return;
+            toast('Duration must be 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“1440 min', true); return;
           }
           logSession(book, pages || 0, duration || 0, notes);
           if (timerState.elapsedSec && Math.abs(+duration - Math.round(timerState.elapsedSec/60)) < 1) {
             resetTimer();
           }
           closeModal();
-          toast(pages ? `Ã°Å¸Å½Â² +${pages} pages logged` : 'Ã°Å¸Å½Â² Session logged');
+          toast(pages ? `ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â² +${pages} pages logged` : 'ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â² Session logged');
         } catch (e) { console.error('roll save error:', e); toast('Save failed', true); }
       });
     }
@@ -2464,10 +2464,10 @@ function bind() {
           const newStart = startEl.value;
           const newEnd = endEl.value;
           if (isNaN(newPage) || newPage < 0 || newPage > book.totalPages) {
-            toast(`Page must be 0Ã¢â‚¬â€œ${book.totalPages}`, true);
+            toast(`Page must be 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“${book.totalPages}`, true);
             return;
           }
-          // Validate start Ã¢â€°Â¤ end (compare global week indices: month*4 + week)
+          // Validate start ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¤ end (compare global week indices: month*4 + week)
           try {
             const [sm, sw] = newStart.split('-W').map(Number);
             const [em, ew] = newEnd.split('-W').map(Number);
@@ -2564,7 +2564,7 @@ function bind() {
           const title = (ctx.title || '').trim();
           const pages = +ctx.totalPages;
           if (!title) { toast('Title required', true); return; }
-          if (!pages || pages < 1 || pages > 100000) { toast('Length must be 1Ã¢â‚¬â€œ100000', true); return; }
+          if (!pages || pages < 1 || pages > 100000) { toast('Length must be 1ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“100000', true); return; }
           const startSnap = dateToWeekKey(ctx.startDate);
           const endSnap   = dateToWeekKey(ctx.endDate);
           if (!startSnap || !endSnap) { toast('Pick valid start + end dates', true); return; }
@@ -2589,7 +2589,7 @@ function bind() {
             startWeek: startSnap, endWeek: endSnap,
           });
 
-          toast(`+ ${title} added Ã‚Â· weekly allocation recalculated`);
+          toast(`+ ${title} added Ãƒâ€šÃ‚Â· weekly allocation recalculated`);
           closeModal();
           // Re-render picks up the new entry through existing BOOK_PROGRESS iteration
           render();
@@ -2656,7 +2656,7 @@ function bind() {
       if (!input) return;
       const token = input.value;
       sConnect.disabled = true;
-      sConnect.textContent = 'ConnectingÃ¢â‚¬Â¦';
+      sConnect.textContent = 'ConnectingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦';
       await connectSync(token);
       if (syncEnabled()) closeModal();
     });
@@ -2696,7 +2696,7 @@ function bind() {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ INIT Ã¢â€â‚¬Ã¢â€â‚¬
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ INIT ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 // Restore any draft books/topics from a previous session before first render
 loadDrafts();
 // Re-evaluate mobile class on viewport changes (rotation, window resize)

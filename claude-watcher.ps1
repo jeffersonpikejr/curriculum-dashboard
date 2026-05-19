@@ -174,20 +174,69 @@ $Global:ClaudeCommitPending = $true
 
 Log "Watcher ready. Edit $sentinel with a JSON message to trigger a commit."
 
+# ---- Sentinel-state tracking for polling fallback ----
+# We've observed FSW events occasionally fail to fire across runspace
+# boundaries — the watcher process stays alive but $Global flag-flipping
+# from the event-subscriber runspace doesn't reach the main loop, so writes
+# strand. To make this robust, the polling loop also stat's the sentinel
+# directly each tick. If we see content we haven't processed yet
+# (non-empty, non-'{}', and different from the last processed snapshot),
+# we trigger Process-Sentinel regardless of FSW state.
+#
+# The FSW event is now a fast-path hint (sub-100ms reaction); polling is
+# the floor (500ms worst case).
+$script:lastSentinelSig = $null   # "size:mtime" of the content we last *processed*
+
+function Get-SentinelSignature {
+  try {
+    if (-not (Test-Path $sentinel)) { return $null }
+    $fi = Get-Item $sentinel -ErrorAction Stop
+    return "{0}:{1}" -f $fi.Length, $fi.LastWriteTimeUtc.Ticks
+  } catch { return $null }
+}
+
+function Sentinel-HasPendingWork {
+  # Cheap check: does the file currently contain a non-empty, non-'{}' payload
+  # AND has it changed since our last processing pass?
+  try {
+    if (-not (Test-Path $sentinel)) { return $false }
+    $sig = Get-SentinelSignature
+    if ($sig -eq $script:lastSentinelSig) { return $false }  # already processed this state
+    $raw = (Get-Content -Path $sentinel -Raw -ErrorAction SilentlyContinue)
+    if (-not $raw -or -not $raw.Trim() -or $raw.Trim() -eq '{}') {
+      # Empty/cleared content: snapshot it so we don't keep checking
+      $script:lastSentinelSig = $sig
+      return $false
+    }
+    return $true
+  } catch { return $false }
+}
+
 # ---- Main polling loop ----
-# Sleeps in short ticks. When the flag is set, debounces briefly (so rapid
-# successive writes coalesce into one commit) and processes the sentinel.
-# All work happens here, in the main script scope.
+# Sleeps in short ticks. Fires Process-Sentinel when EITHER the FSW event
+# flag is set OR a direct sentinel poll detects unprocessed work. After a
+# processing pass we snapshot the sentinel's signature so the polling check
+# doesn't re-fire on the same content (which Process-Sentinel itself clears
+# to '{}' on success anyway).
 while ($true) {
   try {
-    if ($Global:ClaudeCommitPending) {
+    $fswTriggered  = $Global:ClaudeCommitPending
+    $pollTriggered = Sentinel-HasPendingWork
+    if ($fswTriggered -or $pollTriggered) {
       $Global:ClaudeCommitPending = $false
       Start-Sleep -Milliseconds $debounceMs
       # If more events arrived during the debounce window, clear the flag
       # again; we'll re-read the sentinel anyway, so a single processing
       # pass picks up the latest state.
       $Global:ClaudeCommitPending = $false
+      if ($pollTriggered -and -not $fswTriggered) {
+        Log "Polling fallback caught a pending sentinel (FSW event missed)."
+      }
       Process-Sentinel | Out-Null
+      # Snapshot post-processing so we don't re-fire on whatever state we
+      # left the sentinel in (typically '{}' after a successful commit,
+      # or the original payload if commit failed and we kept it for review).
+      $script:lastSentinelSig = Get-SentinelSignature
     }
   } catch {
     # Never crash the loop. Log and continue.

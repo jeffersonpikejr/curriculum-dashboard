@@ -793,13 +793,13 @@ function render() {
             <h1><span class="desktop-only">Personal Learning Curriculum</span><span class="mobile-only">Curriculum</span></h1>
             <div class="date-nav" role="group" aria-label="Viewing date">
               <button class="dn-btn" id="dn-prev" title="Previous day" aria-label="Previous day">‹</button>
-              <button class="dn-label ${isViewingToday() ? 'is-today' : 'is-past'}" id="dn-label" title="${isViewingToday() ? 'Viewing today' : 'Click to return to today'}">
+              <button class="dn-label ${isViewingToday() ? 'is-today' : (getViewingIso() > todayIso() ? 'is-future' : 'is-past')}" id="dn-label" title="${isViewingToday() ? 'Viewing today' : 'Click to return to today'}">
                 <span class="dn-date">${formatViewingHeader()}</span>
                 ${!isViewingToday() ? `<span class="dn-back">↻ Today</span>` : ''}
               </button>
               <button class="dn-btn" id="dn-next" title="Next day" aria-label="Next day">›</button>
               <button class="dn-btn dn-picker" id="dn-picker" title="Pick a date" aria-label="Open calendar">⋯</button>
-              <input type="date" id="dn-date-input" value="${getViewingIso()}" max="${todayIso()}" aria-hidden="true" tabindex="-1">
+              <input type="date" id="dn-date-input" value="${getViewingIso()}" aria-hidden="true" tabindex="-1">
             </div>
             <div class="sub desktop-only">Obsidian + Anki + morning block · 10 topics · syntopic clusters where applicable</div>
           </div>
@@ -1739,7 +1739,12 @@ function renderModal() {
     title = 'Log Study Session';
     const preselectBook = modalState.context?.book || '';
     const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k]) => !isBookComplete(k));
-    const defaultDate = getViewingIso();
+    // Default to viewing date, but clamp to today (can't log future sessions)
+    const viewIso = getViewingIso();
+    const defaultDate = viewIso > todayIso() ? todayIso() : viewIso;
+    const dateHelp = defaultDate === todayIso()
+      ? 'Today (override to backdate)'
+      : 'Backdated from header';
     body = `
       <div class="form-group">
         <label class="form-label">Book / Resource</label>
@@ -1752,7 +1757,7 @@ function renderModal() {
         <div class="form-group">
           <label class="form-label">Date</label>
           <input type="date" class="form-input" id="session-date" value="${defaultDate}" max="${todayIso()}">
-          <div class="form-help">${defaultDate === todayIso() ? 'Today (override to backdate)' : 'Backdated from header'}</div>
+          <div class="form-help">${dateHelp}</div>
         </div>
         <div class="form-group">
           <label class="form-label">Duration (min)</label>
@@ -2124,10 +2129,7 @@ function bind() {
     const dnPrev = document.getElementById('dn-prev');
     if (dnPrev) dnPrev.addEventListener('click', () => { shiftViewingDate(-1); render(); });
     const dnNext = document.getElementById('dn-next');
-    if (dnNext) dnNext.addEventListener('click', () => {
-      // Block navigating past today — future days have nothing logged yet
-      if (S.viewDate && S.viewDate < todayIso()) { shiftViewingDate(1); render(); }
-    });
+    if (dnNext) dnNext.addEventListener('click', () => { shiftViewingDate(1); render(); });
     const dnLabel = document.getElementById('dn-label');
     if (dnLabel) dnLabel.addEventListener('click', () => {
       if (S.viewDate) { S.viewDate = null; render(); }

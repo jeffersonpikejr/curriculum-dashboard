@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v17 | 2026-05-19 09:53';
+const APP_VERSION = 'v18 | 2026-05-19 09:58';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
@@ -1381,6 +1381,61 @@ function formatBookSchedule(bookKey) {
   return { text, drifted };
 }
 
+// Derive a topic's actual timeframe from the union of (a) its tracked books'
+// live start/end weeks and (b) its sub-topics' declared month ranges. Returns
+// { text } as a "May 2026 – Dec 2026" style string, or null if neither data
+// source has anything to contribute (in which case the caller falls back to
+// the hand-written t.tf string).
+//
+// Why both sources: some topics (e.g. Health) track only one book per quarter
+// but have sub-topics spanning many months without books. Books alone would
+// understate the span; sub-topic months alone would miss user-edited book
+// pushes. Union gives the most honest range.
+function getDerivedTopicTimeframe(t) {
+  if (!t) return null;
+  let minIdx = null, maxIdx = null;
+  const updateRange = (sIdx, eIdx) => {
+    if (minIdx === null || sIdx < minIdx) minIdx = sIdx;
+    if (maxIdx === null || eIdx > maxIdx) maxIdx = eIdx;
+  };
+
+  // (a) Books belonging to this topic — use live (override-aware) accessors.
+  Object.entries(BOOK_PROGRESS).forEach(([k, b]) => {
+    if (!b || b.topic !== t.id) return;
+    const sw = getStartWeek(k);
+    const ew = getEndWeek(k);
+    if (!sw || !ew) return;
+    try {
+      const [sm, swk] = sw.split('-W').map(Number);
+      const [em, ewk] = ew.split('-W').map(Number);
+      if ([sm, swk, em, ewk].some(isNaN)) return;
+      updateRange(sm * 4 + swk, em * 4 + ewk);
+    } catch {}
+  });
+
+  // (b) Sub-topic declared month ranges (s.mo). Use month-start (W1) and
+  // month-end (W4) for the first/last active month respectively.
+  const subs = Array.isArray(t.subs) ? t.subs : [];
+  subs.forEach(s => {
+    if (!s) return;
+    const sMo = Array.isArray(s.mo) ? s.mo : [];
+    if (sMo.length === 0) return;
+    const firstM = sMo[0];
+    const lastM  = sMo[sMo.length - 1];
+    if (isNaN(firstM) || isNaN(lastM)) return;
+    updateRange(firstM * 4 + 1, lastM * 4 + 4);
+  });
+
+  if (minIdx === null || maxIdx === null) return null;
+  const startM = Math.floor((minIdx - 1) / 4);
+  const endM   = Math.floor((maxIdx - 1) / 4);
+  if (startM < 0 || startM >= MF.length || endM < 0 || endM >= MF.length) return null;
+  const startLabel = `${MF[startM]} ${MY[startM]}`;
+  const endLabel   = `${MF[endM]} ${MY[endM]}`;
+  const text = (startM === endM) ? startLabel : `${startLabel} – ${endLabel}`;
+  return { text };
+}
+
 function renderCluster(cluster, color) {
   return `
     <div class="cluster-box" style="border-left:3px solid ${color};">
@@ -1683,6 +1738,13 @@ function renderTopicPanel(t) {
     const readings = Array.isArray(t.readings) ? t.readings : [];
     const tMo = Array.isArray(t.mo) ? t.mo : [];
 
+    // Derived "Timeframe" — computed from live book schedules + sub-topic mo
+    // ranges. Fall back to hand-written t.tf if nothing to derive.
+    const derivedTf  = getDerivedTopicTimeframe(t);
+    const tfText     = derivedTf ? derivedTf.text : (t.tf || '');
+    const tfTooltip  = (derivedTf && t.tf && derivedTf.text !== t.tf)
+      ? ` title="Declared: ${escapeHtml(t.tf)}"` : '';
+
     return `
       <div class="topic-head">
         <div class="topic-num" style="color:${t.color};">${t.id}</div>
@@ -1697,7 +1759,7 @@ function renderTopicPanel(t) {
       </div>
 
       <div class="info-grid">
-        <div class="info-box"><div class="lb">Timeframe</div><div class="vl">${escapeHtml(t.tf || '')}</div></div>
+        <div class="info-box"><div class="lb">Timeframe</div><div class="vl"${tfTooltip}>${escapeHtml(tfText)}</div></div>
         <div class="info-box"><div class="lb">Active Months</div><div class="vl" style="display:flex;gap:2px;flex-wrap:wrap;">
           ${ML.map((m,i)=>`<span style="display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:2px;font-size:9px;font-family:'DM Mono',monospace;${tMo.includes(i)?`background:${t.color};color:#fff;`:'background:var(--bg-card);color:var(--text-dim);'}${i===CURRENT_MONTH_IDX?'outline:1px solid var(--accent-good);':''}">${m||'?'}</span>`).join("")}
         </div></div>

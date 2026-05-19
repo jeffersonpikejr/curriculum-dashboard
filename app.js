@@ -17,19 +17,25 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v14 | 2026-05-19 09:23';
+const APP_VERSION = 'v15 | 2026-05-19 09:49';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
 
 // ── VIEWING DATE (header nav + backdated log default) ──
-function todayIso() {
-  const d = new Date();
+// Local-time "YYYY-MM-DD" key. Use this everywhere we bucket sessions or
+// activity into days. Do NOT use toISOString().slice(0,10) — that's UTC and
+// silently misattributes evening EDT activity to the next day. The Log tab
+// renders with toLocaleDateString (local), so any UTC-based bucketing
+// elsewhere disagrees with what the user sees there.
+function localDayKey(dateOrTs) {
+  const d = dateOrTs instanceof Date ? dateOrTs : new Date(dateOrTs);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+function todayIso() { return localDayKey(new Date()); }
 function getViewingDate() {
   // Returns a Date object representing the currently-viewed day (noon local)
   const iso = S.viewDate || todayIso();
@@ -40,7 +46,7 @@ function isViewingToday() { return !S.viewDate || S.viewDate === todayIso(); }
 function shiftViewingDate(days) {
   const d = getViewingDate();
   d.setDate(d.getDate() + days);
-  S.viewDate = d.toISOString().slice(0, 10);
+  S.viewDate = localDayKey(d);
   if (S.viewDate === todayIso()) S.viewDate = null;
 }
 function formatViewingHeader() {
@@ -256,7 +262,7 @@ function deleteSession(idx) {
 
 function addLeverageEntry(text) {
   if (!text || !text.trim()) return;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDayKey(new Date());
   P.leverageLog.unshift({ date: today, text: text.trim() });
   savePersistent();
 }
@@ -269,11 +275,11 @@ function getSessionsInRange(daysBack) {
 
 function getStreakDays() {
   if (P.sessions.length === 0) return 0;
-  const dayKeys = new Set(P.sessions.map(s => new Date(s.ts).toISOString().slice(0,10)));
+  const dayKeys = new Set(P.sessions.map(s => localDayKey(s.ts)));
   let streak = 0;
   let d = new Date();
   while (true) {
-    const k = d.toISOString().slice(0,10);
+    const k = localDayKey(d);
     if (dayKeys.has(k)) {
       streak++;
       d.setDate(d.getDate() - 1);
@@ -281,7 +287,7 @@ function getStreakDays() {
       // Allow one-day gap from today (haven't logged yet today)
       if (streak === 0) {
         d.setDate(d.getDate() - 1);
-        const k2 = d.toISOString().slice(0,10);
+        const k2 = localDayKey(d);
         if (dayKeys.has(k2)) continue;
       }
       break;
@@ -295,7 +301,7 @@ function getPagesByDay(daysBack) {
   const cutoff = Date.now() - daysBack * 86400000;
   P.sessions.forEach(s => {
     if (s.ts < cutoff) return;
-    const k = new Date(s.ts).toISOString().slice(0,10);
+    const k = localDayKey(s.ts);
     result[k] = (result[k] || 0) + (s.pagesRead || 0);
   });
   return result;
@@ -308,7 +314,7 @@ function exportState() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `curriculum-state-${new Date().toISOString().slice(0,10)}.json`;
+  a.download = `curriculum-state-${localDayKey(new Date())}.json`;
   a.click();
   URL.revokeObjectURL(url);
   toast('State exported');
@@ -690,7 +696,7 @@ function weekKeyToDate(wk) {
   if (isNaN(m) || isNaN(w)) return '';
   const MONTH_NAME_IDX = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
   const d = new Date(MY[m], MONTH_NAME_IDX[MF[m]], (w - 1) * 7 + 1);
-  return d.toISOString().slice(0, 10);
+  return localDayKey(d);
 }
 
 function nextFreeTopicId() {
@@ -1218,7 +1224,7 @@ function renderStreakGrid() {
   for (let i = 34; i >= 0; i--) {
     const d = new Date(today);
     d.setDate(d.getDate() - i);
-    const k = d.toISOString().slice(0,10);
+    const k = localDayKey(d);
     const pages = pagesByDay[k] || 0;
     let level = '';
     if (pages > 0) {
@@ -1355,6 +1361,24 @@ function weekLabel(wk) {
 
 function diffWeeks(curIdx, targetIdx) {
   return Math.max(0, targetIdx - curIdx);
+}
+
+// Format a tracked book's schedule as a human-readable range, using the live
+// (override-aware) accessors. Returns { text, drifted } where `drifted` is
+// true iff the user has edited the start or end week away from the data.js
+// default. Callers fall back to the hand-written r.when string if this
+// returns null (unknown bookKey).
+function formatBookSchedule(bookKey) {
+  const book = BOOK_PROGRESS[bookKey];
+  if (!book) return null;
+  const liveStart = getStartWeek(bookKey);
+  const liveEnd   = getEndWeek(bookKey);
+  if (!liveStart || !liveEnd) return null;
+  const drifted = (liveStart !== book.startWeek) || (liveEnd !== book.endWeek);
+  const text = (liveStart === liveEnd)
+    ? weekLabel(liveStart)
+    : `${weekLabel(liveStart)} – ${weekLabel(liveEnd)}`;
+  return { text, drifted };
 }
 
 function renderCluster(cluster, color) {
@@ -1737,16 +1761,31 @@ function renderTopicPanel(t) {
 
       <div class="sec-title" style="color:${t.color}">Reading List</div>
       <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;">
-        ${readings.map((r,i)=>`
-          <div style="display:flex;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);align-items:flex-start;">
-            <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-muted);min-width:20px;padding-top:2px;">${i+1}</div>
-            <div style="flex:1;"><div style="font-weight:500;font-size:13px;">${escapeHtml(r.t||'')}</div><div style="font-size:12px;color:var(--text-secondary);">${escapeHtml(r.a||'')}</div></div>
-            <div style="text-align:right;">
-              <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text-muted);padding:2px 6px;background:var(--bg-card);border-radius:3px;">${escapeHtml(r.type||'')}</div>
-              <div style="font-size:9px;color:var(--text-dim);font-family:'DM Mono',monospace;margin-top:2px;">${escapeHtml(r.when||'')}</div>
+        ${readings.map((r,i) => {
+          // Tracked books: derive the "when" range from the live (override-aware)
+          // accessors so it reflects any user edits. Untracked entries
+          // (papers, case studies, etc.) keep their hand-written r.when.
+          const sched     = r.progressKey ? formatBookSchedule(r.progressKey) : null;
+          const whenText  = sched ? sched.text : (r.when || '');
+          const drifted   = !!(sched && sched.drifted);
+          // Tooltip preserves the original r.when which often carries annotations
+          // (e.g., "priority ch. 1,3,4,5 + ch.8 skim") that the derived range loses.
+          const tooltip   = (sched && r.when) ? `Original: ${r.when}` : '';
+          const tooltipAttr = tooltip ? ` title="${escapeHtml(tooltip)}"` : '';
+          const driftBadge = drifted
+            ? ' <span class="when-drift" title="Live schedule differs from data.js default">◆</span>'
+            : '';
+          return `
+            <div style="display:flex;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);align-items:flex-start;">
+              <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-muted);min-width:20px;padding-top:2px;">${i+1}</div>
+              <div style="flex:1;"><div style="font-weight:500;font-size:13px;">${escapeHtml(r.t||'')}</div><div style="font-size:12px;color:var(--text-secondary);">${escapeHtml(r.a||'')}</div></div>
+              <div style="text-align:right;">
+                <div style="font-size:10px;font-family:'DM Mono',monospace;color:var(--text-muted);padding:2px 6px;background:var(--bg-card);border-radius:3px;">${escapeHtml(r.type||'')}</div>
+                <div style="font-size:9px;color:var(--text-dim);font-family:'DM Mono',monospace;margin-top:2px;"${tooltipAttr}>${escapeHtml(whenText)}${driftBadge}</div>
+              </div>
             </div>
-          </div>
-        `).join("")}
+          `;
+        }).join("")}
       </div>
 
       <div class="sec-title" style="color:${t.color}">Practice Method</div>
@@ -2617,7 +2656,7 @@ function bind() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `curriculum-patch-${new Date().toISOString().slice(0,10)}.js`;
+        a.download = `curriculum-patch-${localDayKey(new Date())}.js`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 500);
       });

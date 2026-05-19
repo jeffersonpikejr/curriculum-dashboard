@@ -320,6 +320,10 @@ input[type="range"] { width: 80px; accent-color: var(--text-muted); height: 3px;
 .g-today { background: rgba(16,185,129,0.08); position: relative; }
 .g-today::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--accent-good); }
 
+/* Reading List drift marker — appears when the live (override-aware)
+   schedule range differs from the data.js default for a tracked book. */
+.when-drift { color: var(--accent-warn); font-size: 9px; opacity: 0.85; margin-left: 2px; }
+
 /* Version stamp — auto-bumped by commit.ps1, click-through, very subtle.
    Sanity indicator: hard-refresh after a commit to confirm deploy fired. */
 .app-version-footer {

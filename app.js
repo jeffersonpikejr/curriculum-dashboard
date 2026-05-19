@@ -49,9 +49,11 @@ const STORAGE_KEY = 'curriculum_v4_state';
 const GIST_DESCRIPTION = 'Curriculum Dashboard State (do not delete)';
 const SYNC_DEBOUNCE_MS = 2000;
 
-// Persistent state: book progress, completed deliverables, session log, leverage log, custom end dates
+// Persistent state: book progress, completed deliverables, session log, leverage log,
+// custom start/end weeks (overrides over data.js BOOK_PROGRESS defaults)
 const DEFAULT_PERSISTENT = {
   bookProgress: {},
+  bookStartOverrides: {},
   bookEndOverrides: {},
   bookCompleted: {},
   deliverablesDone: {},
@@ -77,6 +79,7 @@ function loadPersistent() {
     const parsed = JSON.parse(raw);
     const merged = {...cloneDefault(), ...parsed};
     if (!merged.bookProgress || typeof merged.bookProgress !== 'object') merged.bookProgress = {};
+    if (!merged.bookStartOverrides || typeof merged.bookStartOverrides !== 'object') merged.bookStartOverrides = {};
     if (!merged.bookEndOverrides || typeof merged.bookEndOverrides !== 'object') merged.bookEndOverrides = {};
     if (!merged.bookCompleted || typeof merged.bookCompleted !== 'object') merged.bookCompleted = {};
     if (!merged.deliverablesDone || typeof merged.deliverablesDone !== 'object') merged.deliverablesDone = {};
@@ -118,9 +121,23 @@ function getCurrentPage(bookKey) {
   return BOOK_PROGRESS[bookKey] ? BOOK_PROGRESS[bookKey].currentPage : 0;
 }
 
+function getStartWeek(bookKey) {
+  if (P.bookStartOverrides[bookKey]) return P.bookStartOverrides[bookKey];
+  return BOOK_PROGRESS[bookKey] ? BOOK_PROGRESS[bookKey].startWeek : null;
+}
+
 function getEndWeek(bookKey) {
   if (P.bookEndOverrides[bookKey]) return P.bookEndOverrides[bookKey];
   return BOOK_PROGRESS[bookKey] ? BOOK_PROGRESS[bookKey].endWeek : null;
+}
+
+function hasScheduleOverride(bookKey) {
+  return !!(P.bookStartOverrides[bookKey] || P.bookEndOverrides[bookKey]);
+}
+
+function resetScheduleOverride(bookKey) {
+  delete P.bookStartOverrides[bookKey];
+  delete P.bookEndOverrides[bookKey];
 }
 
 function isBookComplete(bookKey) {
@@ -856,10 +873,12 @@ function render() {
 function suggestRandomActivity() {
   const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k, b]) => {
     if (isBookComplete(k)) return false;
-    if (!b.startWeek || !b.endWeek) return false;
+    const startWeek = getStartWeek(k);
+    const endWeek = getEndWeek(k);
+    if (!startWeek || !endWeek) return false;
     try {
-      const [sm, sw] = b.startWeek.split('-W').map(Number);
-      const [em, ew] = getEndWeek(k).split('-W').map(Number);
+      const [sm, sw] = startWeek.split('-W').map(Number);
+      const [em, ew] = endWeek.split('-W').map(Number);
       if ([sm, sw, em, ew].some(isNaN)) return false;
       const sIdx = sm * 4 + sw;
       const eIdx = em * 4 + ew;
@@ -950,10 +969,11 @@ function renderThisWeek() {
   // Reading progress for current week
   const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
     if (isBookComplete(k)) return false;
-    if (!b.startWeek || !b.endWeek) return false;
+    const startWeek = getStartWeek(k);
     const endWeek = getEndWeek(k);
+    if (!startWeek || !endWeek) return false;
     try {
-      const [sm,sw] = b.startWeek.split('-W').map(Number);
+      const [sm,sw] = startWeek.split('-W').map(Number);
       const [em,ew] = endWeek.split('-W').map(Number);
       if ([sm,sw,em,ew].some(isNaN)) return false;
       const sIdx = sm * 4 + sw;
@@ -966,9 +986,10 @@ function renderThisWeek() {
   // Upcoming books (start within next 4 weeks)
   const upcomingBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
     if (isBookComplete(k)) return false;
-    if (!b.startWeek) return false;
+    const startWeek = getStartWeek(k);
+    if (!startWeek) return false;
     try {
-      const [sm,sw] = b.startWeek.split('-W').map(Number);
+      const [sm,sw] = startWeek.split('-W').map(Number);
       const sIdx = sm * 4 + sw;
       const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
       return sIdx > cIdx && sIdx <= cIdx + 4;
@@ -1010,10 +1031,11 @@ function renderThisWeek() {
   let mostBehindWeeklyGap = 0;
   activeBooks.forEach(([k,b]) => {
     const cur = getCurrentPage(k);
+    const startWeek = getStartWeek(k);
     const endWeek = getEndWeek(k);
     try {
       const [em,ew] = endWeek.split('-W').map(Number);
-      const [sm,sw] = b.startWeek.split('-W').map(Number);
+      const [sm,sw] = startWeek.split('-W').map(Number);
       if ([em,ew,sm,sw].some(isNaN)) return;
       const endIdx = em * 4 + ew;
       const startIdx = sm * 4 + sw;
@@ -1162,7 +1184,7 @@ function renderBookProgress(bookKey, book) {
   const totalPages = Math.max(1, book.totalPages || 1);
   const currentPage = Math.max(0, Math.min(totalPages, getCurrentPage(bookKey)));
   const endWeek = getEndWeek(bookKey) || book.endWeek;
-  const startWeek = book.startWeek;
+  const startWeek = getStartWeek(bookKey) || book.startWeek;
 
   // Parse weeks safely
   let endIdx, startIdx;
@@ -1860,25 +1882,40 @@ function renderModal() {
       footer = `<button class="btn" onclick="closeModal()">Close</button>`;
     } else {
       const cur = getCurrentPage(k);
+      const startWeek = getStartWeek(k);
       const endWeek = getEndWeek(k);
+      const startOverridden = startWeek !== book.startWeek;
+      const endOverridden = endWeek !== book.endWeek;
+      const anyOverride = startOverridden || endOverridden;
       title = `Edit: ${escapeHtml(book.title)}`;
       body = `
+        <div class="form-group">
+          <label class="form-label">Current Page</label>
+          <input type="number" class="form-input" id="edit-page" value="${cur}" min="0" max="${book.totalPages}">
+          <div class="form-help">of ${book.totalPages}</div>
+        </div>
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label">Current Page</label>
-            <input type="number" class="form-input" id="edit-page" value="${cur}" min="0" max="${book.totalPages}">
-            <div class="form-help">of ${book.totalPages}</div>
+            <label class="form-label">Target Start Week</label>
+            <select class="form-select" id="edit-start">
+              ${generateWeekOptions(startWeek)}
+            </select>
+            <div class="form-help">${startOverridden ? 'Overridden' : 'Default'}</div>
           </div>
           <div class="form-group">
             <label class="form-label">Target End Week</label>
             <select class="form-select" id="edit-end">
               ${generateWeekOptions(endWeek)}
             </select>
-            <div class="form-help">Reschedule if needed</div>
+            <div class="form-help">${endOverridden ? 'Overridden' : 'Default'}</div>
           </div>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);padding:8px 12px;background:var(--bg-card);border-radius:4px;margin-top:8px;font-family:'DM Mono',monospace;">
-          Default: ${escapeHtml(book.endWeek)} → ${escapeHtml(endWeek)}
+        <div style="font-size:11px;color:var(--text-muted);padding:8px 12px;background:var(--bg-card);border-radius:4px;margin-top:8px;font-family:'DM Mono',monospace;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div>
+            <div>Start default: ${escapeHtml(book.startWeek)}${startOverridden ? ` → <span style="color:var(--accent-warn);">${escapeHtml(startWeek)}</span>` : ''}</div>
+            <div>End default: ${escapeHtml(book.endWeek)}${endOverridden ? ` → <span style="color:var(--accent-warn);">${escapeHtml(endWeek)}</span>` : ''}</div>
+          </div>
+          ${anyOverride ? `<button type="button" class="btn btn-small btn-ghost" id="edit-reset" data-book="${k}" title="Clear both start and end overrides">↺ Reset to default</button>` : ''}
         </div>
       `;
       footer = `
@@ -2324,15 +2361,29 @@ function bind() {
           const book = BOOK_PROGRESS[k];
           if (!book) { toast('Book not found', true); return; }
           const pageEl = document.getElementById('edit-page');
+          const startEl = document.getElementById('edit-start');
           const endEl = document.getElementById('edit-end');
-          if (!pageEl || !endEl) { toast('Form error', true); return; }
+          if (!pageEl || !startEl || !endEl) { toast('Form error', true); return; }
           const newPage = +pageEl.value;
+          const newStart = startEl.value;
           const newEnd = endEl.value;
           if (isNaN(newPage) || newPage < 0 || newPage > book.totalPages) {
             toast(`Page must be 0–${book.totalPages}`, true);
             return;
           }
+          // Validate start ≤ end (compare global week indices: month*4 + week)
+          try {
+            const [sm, sw] = newStart.split('-W').map(Number);
+            const [em, ew] = newEnd.split('-W').map(Number);
+            if ([sm, sw, em, ew].some(isNaN)) { toast('Bad week value', true); return; }
+            if (sm * 4 + sw > em * 4 + ew) {
+              toast('End week must be on or after start week', true);
+              return;
+            }
+          } catch { toast('Bad week value', true); return; }
           P.bookProgress[k] = newPage;
+          if (newStart !== book.startWeek) P.bookStartOverrides[k] = newStart;
+          else delete P.bookStartOverrides[k];
           if (newEnd !== book.endWeek) P.bookEndOverrides[k] = newEnd;
           else delete P.bookEndOverrides[k];
           if (newPage >= book.totalPages) P.bookCompleted[k] = true;
@@ -2341,6 +2392,24 @@ function bind() {
           closeModal();
           toast('Updated');
         } catch (e) { console.error('save edit error:', e); toast('Save failed', true); }
+      });
+    }
+
+    // Reset schedule overrides for the current book in the edit-book modal.
+    // Clears both start and end overrides and re-renders so the selects snap
+    // back to the data.js defaults.
+    const editReset = document.getElementById('edit-reset');
+    if (editReset) {
+      editReset.addEventListener('click', () => {
+        try {
+          const k = editReset.dataset.book;
+          if (!k || !BOOK_PROGRESS[k]) { toast('Book not found', true); return; }
+          if (!hasScheduleOverride(k)) { toast('No overrides to reset'); return; }
+          resetScheduleOverride(k);
+          savePersistent();
+          toast('Schedule reset to default');
+          render(); // re-render modal so selects + override labels update
+        } catch (e) { console.error('edit reset error:', e); toast('Reset failed', true); }
       });
     }
 

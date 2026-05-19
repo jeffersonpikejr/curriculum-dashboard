@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v19 | 2026-05-19 10:09';
+const APP_VERSION = 'v20 | 2026-05-19 10:12';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
@@ -1197,18 +1197,65 @@ function renderThisWeek() {
   `;
 }
 
+// Parse a syntopic-cluster span string into curriculum-month indices.
+// Handles all current shapes:
+//   "May–Jul 2026"        → both months 2026 (left inherits right year)
+//   "Jul W3–Dec 2026"     → W-suffix on left ignored for month resolution
+//   "Sep 2026–Feb 2027"   → year wraps; both halves carry explicit years
+//   "May–Jun 2026"        → short shared-year form
+// Tolerant of en-dash (U+2013) and ASCII hyphen. Returns
+// {startMonthIdx, endMonthIdx} as positions in the MF/MY arrays, or null
+// if the span can't be resolved (caller treats null clusters as inactive).
+//
+// Why this replaces substring matching: the old getActiveClusters did
+// c.span.includes(MF[cur]) which silently fails on year wraps (e.g. a
+// Nov 2026 cur month never appears literally in "Sep 2026–Feb 2027" so
+// that cluster was incorrectly hidden). Parsing once at activation time
+// is O(clusters) per render — negligible.
+function parseClusterSpan(span) {
+  if (!span || typeof span !== 'string') return null;
+  const parts = span.replace(/–/g, '-').split('-');
+  if (parts.length !== 2) return null;
+  const monthRe = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/;
+  const yearRe  = /(20\d{2})/;
+  const parseHalf = (s) => ({
+    month: (monthRe.exec(s) || [])[1] || null,
+    year:  (yearRe.exec(s)  || [])[1] ? +(yearRe.exec(s)[1]) : null
+  });
+  const L = parseHalf(parts[0]);
+  const R = parseHalf(parts[1]);
+  if (!L.month || !R.month) return null;
+  const lYear = (L.year !== null) ? L.year : R.year;
+  const rYear = (R.year !== null) ? R.year : L.year;
+  if (lYear === null || rYear === null) return null;
+  const findIdx = (name, year) => {
+    for (let i = 0; i < MF.length; i++) {
+      if (MF[i] === name && MY[i] === year) return i;
+    }
+    return -1;
+  };
+  const startMonthIdx = findIdx(L.month, lYear);
+  const endMonthIdx   = findIdx(R.month, rYear);
+  if (startMonthIdx < 0 || endMonthIdx < 0) return null;
+  if (endMonthIdx < startMonthIdx) return null;
+  return { startMonthIdx, endMonthIdx };
+}
+
 function getActiveClusters() {
-  // Smarter active-cluster detection based on current month
-  const monthName = MF[CURRENT_MONTH_IDX];
+  // A cluster is "active" when its parsed month range overlaps the
+  // current-month + next-two-months window. Window matches the prior
+  // behavior; the difference is overlap-vs-substring, which now correctly
+  // surfaces clusters that wrap across the year boundary.
+  const cur = CURRENT_MONTH_IDX;
+  const windowEnd = cur + 2;
   const result = [];
   Object.entries(SYNTOPIC_CLUSTERS).forEach(([tid, clusters]) => {
     const topic = T.find(t => t.id === +tid);
     const color = topic ? topic.color : 'var(--text-muted)';
     clusters.forEach(c => {
-      if (!c.span) return;
-      // Match span string against next 2 months
-      const nextMonths = [MF[CURRENT_MONTH_IDX], MF[CURRENT_MONTH_IDX+1] || '', MF[CURRENT_MONTH_IDX+2] || ''];
-      if (nextMonths.some(m => m && c.span.includes(m))) {
+      const range = parseClusterSpan(c.span);
+      if (!range) return;
+      if (range.startMonthIdx <= windowEnd && range.endMonthIdx >= cur) {
         result.push({c, color});
       }
     });

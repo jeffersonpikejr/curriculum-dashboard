@@ -12,7 +12,7 @@
 'use strict';
 
 // ── STATE & PERSISTENCE ──
-let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3 };
+let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewMode:"pc" };
 const DETAIL_DESC = {1:"Topics only",2:"+ Sub-topic bars",3:"+ Current resource",4:"+ Deliverables",5:"+ Week-by-week"};
 
 const STORAGE_KEY = 'curriculum_v4_state';
@@ -511,8 +511,13 @@ function updateTimerDisplay() {
 // ── RENDER ──
 function render() {
   try {
+    document.body.classList.toggle('view-mobile', S.viewMode === 'mobile');
     const a = document.getElementById("app");
     a.innerHTML = `
+      <div class="view-toggle" role="tablist" aria-label="Viewport mode">
+        <button class="vt-btn ${S.viewMode==='pc'?'active':''}" data-view="pc" role="tab" aria-selected="${S.viewMode==='pc'}">PC</button>
+        <button class="vt-btn ${S.viewMode==='mobile'?'active':''}" data-view="mobile" role="tab" aria-selected="${S.viewMode==='mobile'}">Mobile</button>
+      </div>
       <div class="header">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
           <div style="flex:1;min-width:0;">
@@ -1749,6 +1754,12 @@ function bind() {
     });
     document.querySelectorAll('[data-detail]').forEach(el => {
       el.addEventListener('click', () => { S.detail = +el.dataset.detail; render(); });
+    });
+    document.querySelectorAll('[data-view]').forEach(el => {
+      el.addEventListener('click', () => {
+        try { S.viewMode = el.dataset.view; render(); window.scrollTo(0,0); }
+        catch (e) { console.error('view toggle error:', e); }
+      });
     });
 
     // Modal triggers

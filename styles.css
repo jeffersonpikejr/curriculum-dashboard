@@ -34,6 +34,58 @@ body {
   line-height: 1.5;
 }
 .app { max-width: 1280px; margin: 0 auto; padding: 16px; }
+
+/* ── PC / Mobile view toggle ── */
+.view-toggle {
+  display: inline-flex;
+  gap: 0;
+  padding: 3px;
+  margin: 0 0 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.vt-btn {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+.vt-btn:hover { color: var(--text-secondary); }
+.vt-btn.active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 1px var(--border-active) inset;
+}
+
+/* Mobile viewport simulation — UI optimization pending */
+body.view-mobile { background: #000; }
+body.view-mobile .app {
+  max-width: 390px;
+  margin: 0 auto;
+  padding: 12px;
+  min-height: 100vh;
+  background: var(--bg-deep);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  box-shadow: 0 0 32px rgba(0,0,0,0.6);
+}
+body.view-mobile .header h1 { font-size: 17px; }
+body.view-mobile .action-bar { padding: 8px; gap: 6px; }
+body.view-mobile .action-bar .btn { font-size: 10px; padding: 5px 9px; }
+body.view-mobile .tabs { font-size: 10px; }
+body.view-mobile .tab { padding: 7px 10px; font-size: 10px; }
+body.view-mobile .stats-strip { grid-template-columns: repeat(2, 1fr); }
+body.view-mobile .info-grid { grid-template-columns: 1fr; }
+body.view-mobile .week-banner .wb-grid { grid-template-columns: 1fr; }
+
 .header { padding: 20px 0 14px; border-bottom: 1px solid var(--border); }
 .header h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
 .header .sub { font-size: 11px; color: var(--text-muted); font-family: 'DM Mono', monospace; margin-top: 3px; }

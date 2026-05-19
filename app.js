@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v18 | 2026-05-19 09:58';
+const APP_VERSION = 'v19 | 2026-05-19 10:09';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
@@ -1436,6 +1436,25 @@ function getDerivedTopicTimeframe(t) {
   return { text };
 }
 
+// Derive the union of declared topic months (t.mo) and months covered by the
+// topic's live book schedules. Used by the Active Months mini-calendar on
+// topic tabs to surface override-driven schedule drift without losing the
+// declared baseline. Months added by the book schedule but absent from t.mo
+// are rendered outlined (not filled); declared months keep the solid swatch.
+//
+// Returns:
+//   declared : Set of t.mo month indices
+//   fromBooks: Set of month indices covered by live book schedules
+//   added    : fromBooks minus declared (the "derived-only" months)
+//   drifted  : true when added.size > 0
+function getDerivedTopicActiveMonths(t) {
+  const declared = new Set(Array.isArray(t && t.mo) ? t.mo : []);
+  const fromBooks = (t && t.id) ? getTopicBookActiveMonths(t.id) : new Set();
+  const added = new Set();
+  fromBooks.forEach(m => { if (!declared.has(m)) added.add(m); });
+  return { declared, fromBooks, added, drifted: added.size > 0 };
+}
+
 function renderCluster(cluster, color) {
   return `
     <div class="cluster-box" style="border-left:3px solid ${color};">
@@ -1736,7 +1755,6 @@ function renderTopicPanel(t) {
     const clusters = SYNTOPIC_CLUSTERS[t.id];
     const subs = Array.isArray(t.subs) ? t.subs : [];
     const readings = Array.isArray(t.readings) ? t.readings : [];
-    const tMo = Array.isArray(t.mo) ? t.mo : [];
 
     // Derived "Timeframe" — computed from live book schedules + sub-topic mo
     // ranges. Fall back to hand-written t.tf if nothing to derive.
@@ -1744,6 +1762,14 @@ function renderTopicPanel(t) {
     const tfText     = derivedTf ? derivedTf.text : (t.tf || '');
     const tfTooltip  = (derivedTf && t.tf && derivedTf.text !== t.tf)
       ? ` title="Declared: ${escapeHtml(t.tf)}"` : '';
+
+    // Derived Active Months — declared t.mo months render filled with the
+    // topic color; months added by the live book schedule render outlined
+    // (transparent bg, inset 1px topic-color rim) so the user can see drift.
+    const dam = getDerivedTopicActiveMonths(t);
+    const moDriftMark = dam.drifted
+      ? `<span class="when-drift" title="Book schedule covers months beyond declared t.mo">◆</span>`
+      : '';
 
     return `
       <div class="topic-head">
@@ -1760,8 +1786,21 @@ function renderTopicPanel(t) {
 
       <div class="info-grid">
         <div class="info-box"><div class="lb">Timeframe</div><div class="vl"${tfTooltip}>${escapeHtml(tfText)}</div></div>
-        <div class="info-box"><div class="lb">Active Months</div><div class="vl" style="display:flex;gap:2px;flex-wrap:wrap;">
-          ${ML.map((m,i)=>`<span style="display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:2px;font-size:9px;font-family:'DM Mono',monospace;${tMo.includes(i)?`background:${t.color};color:#fff;`:'background:var(--bg-card);color:var(--text-dim);'}${i===CURRENT_MONTH_IDX?'outline:1px solid var(--accent-good);':''}">${m||'?'}</span>`).join("")}
+        <div class="info-box"><div class="lb">Active Months ${moDriftMark}</div><div class="vl" style="display:flex;gap:2px;flex-wrap:wrap;">
+          ${ML.map((m,i)=>{
+            const curOutline = (i === CURRENT_MONTH_IDX) ? 'outline:1px solid var(--accent-good);' : '';
+            let bg, fg, extra = '', title = '';
+            if (dam.declared.has(i)) {
+              bg = t.color; fg = '#fff';
+            } else if (dam.added.has(i)) {
+              bg = 'transparent'; fg = t.color;
+              extra = `box-shadow:inset 0 0 0 1px ${t.color}99;`;
+              title = ' title="Added by live book schedule"';
+            } else {
+              bg = 'var(--bg-card)'; fg = 'var(--text-dim)';
+            }
+            return `<span${title} style="display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:2px;font-size:9px;font-family:'DM Mono',monospace;background:${bg};color:${fg};${extra}${curOutline}">${m||'?'}</span>`;
+          }).join("")}
         </div></div>
       </div>
 

@@ -12,7 +12,22 @@
 'use strict';
 
 // ── STATE & PERSISTENCE ──
-let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewMode:"pc" };
+const VIEW_MODE_KEY = 'curriculum_v4_viewMode';
+function detectInitialViewMode() {
+  try {
+    const saved = localStorage.getItem(VIEW_MODE_KEY);
+    if (saved === 'pc' || saved === 'mobile') return saved;
+  } catch (_) {}
+  try {
+    if (window.matchMedia && window.matchMedia('(max-width: 600px)').matches) return 'mobile';
+  } catch (_) {}
+  return 'pc';
+}
+function setViewMode(mode) {
+  S.viewMode = mode;
+  try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch (_) {}
+}
+let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewMode: detectInitialViewMode() };
 const DETAIL_DESC = {1:"Topics only",2:"+ Sub-topic bars",3:"+ Current resource",4:"+ Deliverables",5:"+ Week-by-week"};
 
 const STORAGE_KEY = 'curriculum_v4_state';
@@ -509,9 +524,18 @@ function updateTimerDisplay() {
 }
 
 // ── RENDER ──
+function isViewportNarrow() {
+  try { return window.innerWidth <= 600; } catch (_) { return false; }
+}
+function applyMobileBodyClasses() {
+  const mobileToggle = S.viewMode === 'mobile';
+  const narrow = isViewportNarrow();
+  document.body.classList.toggle('view-mobile', mobileToggle);
+  document.body.classList.toggle('mobile-active', mobileToggle || narrow);
+}
 function render() {
   try {
-    document.body.classList.toggle('view-mobile', S.viewMode === 'mobile');
+    applyMobileBodyClasses();
     const a = document.getElementById("app");
     a.innerHTML = `
       <div class="view-toggle" role="tablist" aria-label="Viewport mode">
@@ -1757,7 +1781,7 @@ function bind() {
     });
     document.querySelectorAll('[data-view]').forEach(el => {
       el.addEventListener('click', () => {
-        try { S.viewMode = el.dataset.view; render(); window.scrollTo(0,0); }
+        try { setViewMode(el.dataset.view); render(); window.scrollTo(0,0); }
         catch (e) { console.error('view toggle error:', e); }
       });
     });
@@ -2016,4 +2040,12 @@ function bind() {
 }
 
 // ── INIT ──
+// Re-evaluate mobile class on viewport changes (rotation, window resize)
+try {
+  let resizeRaf = null;
+  window.addEventListener('resize', () => {
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    resizeRaf = requestAnimationFrame(applyMobileBodyClasses);
+  }, { passive: true });
+} catch (_) {}
 render();

@@ -65,26 +65,182 @@ body {
   box-shadow: 0 0 0 1px var(--border-active) inset;
 }
 
-/* Mobile viewport simulation — UI optimization pending */
+/* ════════════════════════════════════════════════════════════
+   MOBILE MODE
+   Activated under EITHER condition (via body.mobile-active, set by JS):
+     • Explicit PC/Mobile toggle set to "Mobile"
+     • Viewport width ≤ 600px (real phone)
+   Additionally, body.view-mobile (toggle only) layers the phone-frame
+   chrome on top — visible border + max-width to simulate a phone on PC.
+   ════════════════════════════════════════════════════════════ */
+
+/* ── Phone-frame chrome (toggle only) ── */
 body.view-mobile { background: #000; }
 body.view-mobile .app {
   max-width: 390px;
   margin: 0 auto;
-  padding: 12px;
-  min-height: 100vh;
   background: var(--bg-deep);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
   box-shadow: 0 0 32px rgba(0,0,0,0.6);
 }
-body.view-mobile .header h1 { font-size: 17px; }
-body.view-mobile .action-bar { padding: 8px; gap: 6px; }
-body.view-mobile .action-bar .btn { font-size: 10px; padding: 5px 9px; }
-body.view-mobile .tabs { font-size: 10px; }
-body.view-mobile .tab { padding: 7px 10px; font-size: 10px; }
-body.view-mobile .stats-strip { grid-template-columns: repeat(2, 1fr); }
-body.view-mobile .info-grid { grid-template-columns: 1fr; }
-body.view-mobile .week-banner .wb-grid { grid-template-columns: 1fr; }
+
+/* ── Touch baseline ── */
+body.mobile-active { -webkit-tap-highlight-color: transparent; }
+body.mobile-active button,
+body.mobile-active .tab,
+body.mobile-active .toggle-btn,
+body.mobile-active .vt-btn,
+body.mobile-active a,
+body.mobile-active input,
+body.mobile-active select,
+body.mobile-active textarea,
+body.mobile-active .deliverable-check { touch-action: manipulation; }
+
+/* App shell — safe-area-aware padding */
+body.mobile-active .app {
+  padding: 12px 12px calc(20px + env(safe-area-inset-bottom, 0px));
+  min-height: 100vh;
+}
+
+/* View toggle — full-width segmented control */
+body.mobile-active .view-toggle { width: 100%; }
+body.mobile-active .vt-btn { flex: 1; padding: 9px 12px; font-size: 11px; min-height: 38px; }
+
+/* Header */
+body.mobile-active .header { padding: 14px 0 12px; }
+body.mobile-active .header h1 { font-size: 18px; line-height: 1.3; }
+body.mobile-active .today-badge { display: inline-block; margin: 6px 0 0; }
+body.mobile-active .header .sub { font-size: 10px; line-height: 1.4; }
+body.mobile-active .sync-badge { padding: 7px 11px; min-height: 34px; }
+
+/* Action bar — 2-col, hide redundant label & spacer */
+body.mobile-active .action-bar { padding: 8px; gap: 6px; margin: 10px 0 14px; }
+body.mobile-active .action-bar .action-bar-label { display: none; }
+body.mobile-active .action-bar > span[style*="flex:1"] { display: none; }
+body.mobile-active .action-bar .btn {
+  flex: 1 1 calc(50% - 3px);
+  justify-content: center;
+  min-height: 40px;
+  font-size: 11px;
+  padding: 9px 10px;
+}
+body.mobile-active .action-bar .btn-ghost { flex: 1 1 calc(50% - 3px); }
+
+/* Tabs — edge-to-edge, larger tap area */
+body.mobile-active .tabs { margin: 0 -12px; padding: 8px 12px 0; }
+body.mobile-active .tab { padding: 11px 13px; font-size: 11px; min-height: 40px; }
+
+/* Stats: 2-col */
+body.mobile-active .stats-strip { grid-template-columns: 1fr 1fr; gap: 6px; }
+body.mobile-active .stat-card { padding: 10px 12px; }
+body.mobile-active .stat-card .stat-value { font-size: 17px; }
+
+/* Streak grid — tighter cells fit 35 across narrow viewport */
+body.mobile-active .streak-grid { gap: 1px; }
+
+/* Week banner — single column */
+body.mobile-active .week-banner { padding: 12px; }
+body.mobile-active .week-banner .wb-grid { grid-template-columns: 1fr; gap: 6px; }
+
+/* Controls — stacked */
+body.mobile-active .controls { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px; }
+body.mobile-active .controls .control-group { justify-content: space-between; width: 100%; }
+body.mobile-active .detail-desc { display: none; }
+body.mobile-active .toggle-btn { padding: 8px 12px; font-size: 11px; min-height: 32px; }
+body.mobile-active input[type="range"] { flex: 1; width: auto; height: 6px; }
+
+/* Topic detail */
+body.mobile-active .topic-head { gap: 10px; padding-bottom: 12px; margin-bottom: 14px; }
+body.mobile-active .topic-num { font-size: 26px; }
+body.mobile-active .topic-meta h2 { font-size: 17px; }
+body.mobile-active .info-grid { grid-template-columns: 1fr; }
+body.mobile-active .info-box { padding: 10px 12px; }
+
+/* Reading progress */
+body.mobile-active .reading-progress { padding: 10px 12px; }
+body.mobile-active .rp-head { gap: 6px; }
+
+/* Sub-items / clusters */
+body.mobile-active .sub-item { padding: 10px 12px; gap: 8px; }
+body.mobile-active .cluster-box { padding: 10px 12px; }
+body.mobile-active .cluster-item { padding: 8px 10px; flex-wrap: wrap; }
+
+/* Tables (Gantt, plan) — preserve horizontal scroll, tighten cells */
+body.mobile-active .plan-table { font-size: 11px; }
+body.mobile-active .plan-table th,
+body.mobile-active .plan-table td { padding: 5px 8px; }
+body.mobile-active .gantt { min-width: 720px; }
+
+/* Forms — 16px stops iOS zoom-on-focus, 44px hit-area */
+body.mobile-active .form-input,
+body.mobile-active .form-select,
+body.mobile-active .form-textarea {
+  font-size: 16px;
+  min-height: 44px;
+  padding: 10px 12px;
+}
+body.mobile-active .form-textarea { min-height: 96px; font-size: 14px; }
+body.mobile-active .form-row { grid-template-columns: 1fr; }
+body.mobile-active .form-label { font-size: 11px; }
+
+/* Buttons — bigger tap targets globally */
+body.mobile-active .btn { font-size: 12px; padding: 9px 14px; min-height: 40px; }
+body.mobile-active .btn.btn-small { font-size: 11px; padding: 7px 10px; min-height: 32px; }
+
+/* Modals — bottom-sheet pattern */
+body.mobile-active .modal-backdrop { padding: 0; align-items: flex-end; }
+body.mobile-active .modal {
+  max-width: 100%;
+  max-height: 92vh;
+  border-radius: 14px 14px 0 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  display: flex;
+  flex-direction: column;
+  animation: sheetIn 0.25s ease-out;
+}
+body.mobile-active .modal-head { padding: 14px 16px; flex-shrink: 0; }
+body.mobile-active .modal-body { padding: 14px 16px; overflow-y: auto; flex: 1; }
+body.mobile-active .modal-foot {
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+body.mobile-active .modal-foot .btn { flex: 1; min-width: 120px; justify-content: center; }
+body.mobile-active .modal-close { font-size: 24px; padding: 8px; min-width: 36px; min-height: 36px; }
+body.mobile-active .modal-title { font-size: 15px; }
+@keyframes sheetIn {
+  from { transform: translateY(20px); opacity: 0.5; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* Deliverable checkbox — larger */
+body.mobile-active .deliverable-check { font-size: 12px; min-height: 32px; padding: 4px 0; }
+body.mobile-active .deliverable-check input[type="checkbox"] { width: 18px; height: 18px; }
+body.mobile-active .deliverable-check input[type="checkbox"]:checked::after { top: 0; left: 3px; font-size: 14px; }
+
+/* Dice — full-width primary action */
+body.mobile-active .dice-row { justify-content: stretch; }
+body.mobile-active .dice-button { width: 100%; justify-content: center; min-height: 44px; font-size: 12px; padding: 10px; }
+
+/* Timer display — bigger for one-glance read */
+body.mobile-active .timer-display { font-size: 32px; padding: 20px; }
+
+/* Log entry — wrap meta */
+body.mobile-active .log-entry { padding: 10px 12px; }
+body.mobile-active .log-entry-head { flex-wrap: wrap; gap: 4px; }
+
+/* Toast — full-width minus side margin */
+body.mobile-active .toast { width: calc(100% - 24px); text-align: center; left: 12px; transform: none; }
+body.mobile-active .toast { animation: toastInMobile 0.3s ease-out; }
+@keyframes toastInMobile {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .header { padding: 20px 0 14px; border-bottom: 1px solid var(--border); }
 .header h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }

@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v23 | 2026-05-19 10:28';
+const APP_VERSION = 'v24 | 2026-05-19 10:32';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true };
@@ -151,12 +151,29 @@ function getEndWeek(bookKey) {
 }
 
 function hasScheduleOverride(bookKey) {
-  return !!(P.bookStartOverrides[bookKey] || P.bookEndOverrides[bookKey]);
+  return !!(P.bookStartOverrides[bookKey] || P.bookEndOverrides[bookKey] || hasCustomNoteOverride(bookKey));
 }
 
 function resetScheduleOverride(bookKey) {
   delete P.bookStartOverrides[bookKey];
   delete P.bookEndOverrides[bookKey];
+  delete P.customNotes[bookKey];
+}
+
+// P3 #12: per-book free-text note override. Default note lives on
+// BOOK_PROGRESS[k].note (hand-written authorial context like "Priority
+// chapters only · full book is 537 pp"). User override replaces the default
+// in any UI surface that displays it (currently the Reading List author
+// line via renderBookProgress).
+function getBookNote(bookKey) {
+  if (Object.prototype.hasOwnProperty.call(P.customNotes, bookKey)) {
+    return P.customNotes[bookKey];
+  }
+  return (BOOK_PROGRESS[bookKey] && BOOK_PROGRESS[bookKey].note) || '';
+}
+
+function hasCustomNoteOverride(bookKey) {
+  return Object.prototype.hasOwnProperty.call(P.customNotes, bookKey);
 }
 
 // P4 #14: append an audit entry when a schedule field changes. Caller is
@@ -1440,7 +1457,13 @@ function renderBookProgress(bookKey, book) {
       <div class="rp-head">
         <div>
           <div class="rp-title">${escapeHtml(book.title)}</div>
-          <div class="rp-author">${escapeHtml(book.author || '')}${book.note ? ' · ' + escapeHtml(book.note) : ''}</div>
+          <div class="rp-author">${escapeHtml(book.author || '')}${(() => {
+            const liveNote = getBookNote(bookKey);
+            if (!liveNote) return '';
+            const drifted = hasCustomNoteOverride(bookKey) && liveNote !== (book.note || '');
+            const driftMark = drifted ? ` <span class="when-drift" title="Default: ${escapeHtml(book.note || '(none)')}">◆</span>` : '';
+            return ' · ' + escapeHtml(liveNote) + driftMark;
+          })()}</div>
           <div style="font-size:9px;font-family:'DM Mono',monospace;color:var(--text-muted);margin-top:2px;">${scheduleLabel}</div>
         </div>
         <div class="rp-stats">${currentPage} / ${totalPages} pp</div>
@@ -2249,9 +2272,12 @@ function renderModal() {
       const cur = getCurrentPage(k);
       const startWeek = getStartWeek(k);
       const endWeek = getEndWeek(k);
+      const liveNote = getBookNote(k);
+      const defaultNote = book.note || '';
       const startOverridden = startWeek !== book.startWeek;
       const endOverridden = endWeek !== book.endWeek;
-      const anyOverride = startOverridden || endOverridden;
+      const noteOverridden = hasCustomNoteOverride(k);
+      const anyOverride = startOverridden || endOverridden || noteOverridden;
       title = `Edit: ${escapeHtml(book.title)}`;
       body = `
         <div class="form-group">
@@ -2275,12 +2301,18 @@ function renderModal() {
             <div class="form-help">${endOverridden ? 'Overridden' : 'Default'}</div>
           </div>
         </div>
+        <div class="form-group">
+          <label class="form-label">Note</label>
+          <textarea class="form-textarea" id="edit-note" rows="2" maxlength="240" placeholder="Optional · e.g. 'pushed from Jul W1 to relieve July peak'">${escapeHtml(liveNote)}</textarea>
+          <div class="form-help">${noteOverridden ? 'Overridden' : 'Default'} · shown on the Reading List row</div>
+        </div>
         <div style="font-size:11px;color:var(--text-muted);padding:8px 12px;background:var(--bg-card);border-radius:4px;margin-top:8px;font-family:'DM Mono',monospace;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
           <div>
             <div>Start default: ${escapeHtml(book.startWeek)}${startOverridden ? ` → <span style="color:var(--accent-warn);">${escapeHtml(startWeek)}</span>` : ''}</div>
             <div>End default: ${escapeHtml(book.endWeek)}${endOverridden ? ` → <span style="color:var(--accent-warn);">${escapeHtml(endWeek)}</span>` : ''}</div>
+            ${noteOverridden ? `<div>Note default: ${escapeHtml(defaultNote || '(none)')} → <span style="color:var(--accent-warn);">${escapeHtml(liveNote || '(empty)')}</span></div>` : ''}
           </div>
-          ${anyOverride ? `<button type="button" class="btn btn-small btn-ghost" id="edit-reset" data-book="${k}" title="Clear both start and end overrides">↺ Reset to default</button>` : ''}
+          ${anyOverride ? `<button type="button" class="btn btn-small btn-ghost" id="edit-reset" data-book="${k}" title="Clear start, end, and note overrides">↺ Reset to default</button>` : ''}
         </div>
       `;
       footer = `
@@ -2735,10 +2767,12 @@ function bind() {
           const pageEl = document.getElementById('edit-page');
           const startEl = document.getElementById('edit-start');
           const endEl = document.getElementById('edit-end');
+          const noteEl = document.getElementById('edit-note');
           if (!pageEl || !startEl || !endEl) { toast('Form error', true); return; }
           const newPage = +pageEl.value;
           const newStart = startEl.value;
           const newEnd = endEl.value;
+          const newNote = noteEl ? noteEl.value.trim() : '';
           if (isNaN(newPage) || newPage < 0 || newPage > book.totalPages) {
             toast(`Page must be 0–${book.totalPages}`, true);
             return;
@@ -2762,6 +2796,10 @@ function bind() {
           else delete P.bookStartOverrides[k];
           if (newEnd !== book.endWeek) P.bookEndOverrides[k] = newEnd;
           else delete P.bookEndOverrides[k];
+          // P3 #12: note override symmetric with start/end — if equal to
+          // default, drop the override so default rendering resumes.
+          if (newNote !== (book.note || '')) P.customNotes[k] = newNote;
+          else delete P.customNotes[k];
           if (newPage >= book.totalPages) P.bookCompleted[k] = true;
           else delete P.bookCompleted[k];
           logScheduleChange(k, 'startWeek', prevStart, getStartWeek(k));

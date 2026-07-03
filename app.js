@@ -401,6 +401,40 @@ function getSessionsInRange(daysBack) {
   return P.sessions.filter(s => s.ts >= cutoff);
 }
 
+// P1 #1.3: measured weekly capacity — median pages per curriculum week over
+// the last 6 COMPLETED weeks (idx in [cIdx-6, cIdx-1]) that contain at least
+// one logged session, scaled by 0.9 as a sustainability haircut. Median over
+// session-containing weeks only: a vacation week doesn't drag the estimate
+// down (the month-gap scenario), while a single binge week doesn't inflate
+// it (the mean would). Requires ≥2 qualifying weeks; otherwise returns
+// {value: null} and the caller shows an honestly-labeled default.
+// Sessions bucket via localDayKey (LOCAL day — see the app.js:31 invariant,
+// never toISOString) → dateToWeekKey → weekIdx.
+function getMeasuredCapacity() {
+  const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+  const sums = {};
+  P.sessions.forEach(s => {
+    if (!s || typeof s.ts !== 'number') return;
+    const idx = weekIdx(dateToWeekKey(localDayKey(s.ts)));
+    if (idx === null) return;
+    sums[idx] = (sums[idx] || 0) + (s.pagesRead || 0);
+  });
+  const qualifying = [];
+  for (let i = Math.max(1, cIdx - 6); i <= cIdx - 1; i++) {
+    if (Object.prototype.hasOwnProperty.call(sums, i)) qualifying.push(sums[i]);
+  }
+  if (qualifying.length < 2) {
+    return { value: null, weeksUsed: qualifying.length, reason: 'insufficient-history' };
+  }
+  const sorted = [...qualifying].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const value = Math.round(0.9 * median);
+  // `low` cues the modal to suggest a manual number instead of trusting a
+  // very thin measured pace (< 25 pp/wk).
+  return { value, weeksUsed: qualifying.length, low: value < 25 };
+}
+
 function getStreakDays() {
   if (P.sessions.length === 0) return 0;
   const dayKeys = new Set(P.sessions.map(s => localDayKey(s.ts)));

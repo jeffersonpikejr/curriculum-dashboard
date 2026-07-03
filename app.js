@@ -78,6 +78,18 @@ const DEFAULT_PERSISTENT = {
   // Written by the edit-book save handler and the reset-overrides handler.
   scheduleLog: [],
   customNotes: {},
+  // P1 autobalance: capacity-fit rebalancer config + last-run record.
+  // pinned books never move during a rebalance; dismissedUntilIdx suppresses
+  // the behind banner until the given global week index (re-arms on the next
+  // curriculum week rather than a wall-clock delay).
+  autobalance: {
+    capacityMode: 'auto',    // 'auto' (measured median) | 'manual'
+    manualCapacity: null,    // pp/wk number when manual
+    pinned: {},              // {bookKey: true} — persisted pins
+    dismissedUntilIdx: null, // global week idx; banner hidden while curIdx < this
+    lastRunTs: null,         // ms epoch of last Apply
+    lastRun: null,           // {ts, capacity, capacitySource, changes:[{bookKey, from, to}]}
+  },
   sync: {
     token: null,        // GitHub PAT with gist scope
     gistId: null,       // ID of the curriculum gist
@@ -105,6 +117,7 @@ function loadPersistent() {
     if (!Array.isArray(merged.leverageLog)) merged.leverageLog = [];
     if (!Array.isArray(merged.scheduleLog)) merged.scheduleLog = [];
     if (!merged.customNotes || typeof merged.customNotes !== 'object') merged.customNotes = {};
+    if (!merged.autobalance || typeof merged.autobalance !== 'object') merged.autobalance = cloneDefault().autobalance;
     if (!merged.sync || typeof merged.sync !== 'object') merged.sync = cloneDefault().sync;
     return merged;
   } catch (e) {
@@ -180,15 +193,67 @@ function hasCustomNoteOverride(bookKey) {
 // responsible for capturing the "from" value BEFORE writing the override and
 // the "to" value AFTER. Skips no-op transitions so the log only records real
 // edits. Newest-first via unshift to match leverageLog conventions.
-function logScheduleChange(bookKey, field, from, to) {
+// P1: optional `source` tag ('autobalance' | 'autobalance-undo') distinguishes
+// automated writes from manual edits in the audit trail. Spread only when
+// truthy so manual entries keep their pre-P1 shape (backward compatible —
+// old clients round-trip unknown fields through the gist unharmed).
+function logScheduleChange(bookKey, field, from, to, source) {
   if (from === to) return;
   P.scheduleLog.unshift({
     ts: Date.now(),
     bookKey,
     field,
     from: from || null,
-    to:   to   || null
+    to:   to   || null,
+    ...(source ? { source } : {})
   });
+}
+
+// ── WEEK INDEX HELPERS (P1 #1.1) ──
+// Global week index = monthIdx*4 + weekOfMonth — the same m*4+w convention
+// as the inline pacing math in renderThisWeek / renderBookProgress (P3 #3.1
+// migrates those sites here). Domain: "0-W1" (May 2026 W1) = 1 through
+// "13-W4" (Jun 2027 W4) = 56 = MAX_WEEK_IDX, matching generateWeekOptions.
+const MAX_WEEK_IDX = 14 * 4; // "13-W4" — end of the curriculum horizon
+
+function weekIdx(wk) {
+  if (!wk || typeof wk !== 'string') return null;
+  const [m, w] = wk.split('-W').map(Number);
+  if (isNaN(m) || isNaN(w)) return null;
+  return m * 4 + w;
+}
+
+// Inverse of weekIdx. Caller guarantees idx is in [1, MAX_WEEK_IDX].
+function idxToWeekKey(idx) {
+  const m = Math.floor((idx - 1) / 4);
+  const w = idx - m * 4;
+  return weekKey(m, w);
+}
+
+// ── AUTOBALANCE STATE ACCESSORS (P1 #1.1) ──
+// pullFromGist and importState rebuild P via {...cloneDefault(), ...parsed}
+// WITHOUT the per-field type guards in loadPersistent, so a malformed remote
+// autobalance object can land in P as-is. All reads go through this
+// normalizing accessor; writers call ensureAutobalanceState() first so the
+// write target is always well-formed.
+function getAutobalanceConfig() {
+  const d = cloneDefault().autobalance;
+  const raw = (P.autobalance && typeof P.autobalance === 'object') ? P.autobalance : {};
+  return {
+    capacityMode: raw.capacityMode === 'manual' ? 'manual' : d.capacityMode,
+    manualCapacity: (typeof raw.manualCapacity === 'number' && isFinite(raw.manualCapacity) && raw.manualCapacity > 0)
+      ? raw.manualCapacity : d.manualCapacity,
+    pinned: (raw.pinned && typeof raw.pinned === 'object') ? raw.pinned : {},
+    dismissedUntilIdx: (typeof raw.dismissedUntilIdx === 'number' && isFinite(raw.dismissedUntilIdx))
+      ? raw.dismissedUntilIdx : d.dismissedUntilIdx,
+    lastRunTs: (typeof raw.lastRunTs === 'number') ? raw.lastRunTs : d.lastRunTs,
+    lastRun: (raw.lastRun && typeof raw.lastRun === 'object') ? raw.lastRun : d.lastRun,
+  };
+}
+
+function ensureAutobalanceState() {
+  P.autobalance = getAutobalanceConfig();
+  return P.autobalance;
 }
 
 // ── BOOK SCHEDULE → TIMELINE OVERLAY HELPERS ──

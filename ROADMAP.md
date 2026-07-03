@@ -54,11 +54,22 @@ Effective capacity: manual override if set, else measured. Null measured in auto
 
 ## 5. Solver — `computeRebalancePlan({capacity, locks})` (pure, deterministic)
 
-Shared helpers: `weekIdx(wk)` = `split('-W').map(Number)` → `m*4+w` (null on NaN — never lexical compare); `idxToWeekKey(idx)`; domain idx 1 ("0-W1") .. `MAX_IDX = 56` ("13-W4").
+> **Design amendment (2026-07-03, shipped):** the originally-specced
+> scan-end-weeks-against-per-week-load fit **degenerates on real data** — one
+> pinch week created by unmovable pre-charges (e.g. bogdan-villiger's 360 pp
+> starting 2-W3) rejects every window that crosses it, cascading 7 of 10 books
+> to the horizon with bogus "doesn't fit" verdicts. Since every UI surface
+> displays even-spread-from-today pacing, every active book's window contains
+> the current week — so the current week's load is exactly the sum of active
+> rates, and the correct formulation is a **water-fill over rates**, with end
+> weeks *derived from* allocations rather than searched. All judge-panel
+> invariants survive (never-shrink, idempotency, determinism, hard
+> current-week fit, composition cap, honest unresolved).
+
+Shared helpers: `weekIdx(wk)` = `split('-W').map(Number)` → `m*4+w` (null on NaN — never lexical compare); `idxToWeekKey(idx)`; domain idx 1 ("0-W1") .. `MAX_WEEK_IDX = 56` ("13-W4").
 
 ```
 cIdx = CURRENT_MONTH_IDX*4 + CURRENT_WEEK_OF_MONTH        // same frozen anchor as all pace pills
-load = float array [0..56]
 
 POOL: each non-complete book → {k, sIdx, eIdx, remaining, tier}
   remaining === 0 → markDone[] ("mark done instead" — never writes bookCompleted)
@@ -66,21 +77,27 @@ POOL: each non-complete book → {k, sIdx, eIdx, remaining, tier}
 
 PARTITION: locked (session locks ∪ persisted pins) | upcoming (sIdx > cIdx) | active (sIdx <= cIdx)
 
-PRE-CHARGE: locked ∪ upcoming books charge load[max(sIdx,cIdx)..max(eIdx,·)] += even-spread rate
-  (pins consume capacity, never move — honest solver)
+PRE-CHARGE: locked ∪ upcoming charge even-spread load into their windows
+  (a locked ACTIVE book consumes current-week budget — pinning an overdue
+   monster honestly starves everything else)
 
-FIT ACTIVE, priority order: tier asc, live eIdx asc, remaining desc, bookKey asc (determinism):
-  rateCap = (2+ active) ? ceil(capacity * 0.5) : capacity   // concurrency cap: weeks realistic in composition
-  scan E from max(cIdx, current live eIdx) .. 56:           // scan floor = live end: NEVER-SHRINK by construction
-    rate = remaining / (E - cIdx + 1)
-    accept first E where rate <= rateCap AND load[t] + rate <= capacity for all t in window
-  no fit → E = 56, unresolved[] with needsPagesPerWeek
-  commit load; emit change {bookKey, from, to, oldRate, newRate, deltaWeeks} only if E != live end
+ALLOCATE (water-fill), priority order: tier asc, live eIdx asc, remaining desc, bookKey asc:
+  budget = capacity - load[cIdx]                            // after locked pre-charge
+  rateCap = (2+ active) ? ceil(capacity * 0.5) : capacity   // composition cap
+  pass 1: reserve minRate = remaining/48 for every book     // "can still finish by Jun 2027"
+  pass 2: top up by priority to min(rateCap, liveRate, remaining)
+          // liveRate ceiling IS never-shrink expressed as a rate: a book can
+          // never be asked to finish EARLIER than its live end
 
-RETURN {changes, before, after, capacity, capacitySource, unresolved, markDone, invalid, locked, unchanged, asOf}
+DERIVE: E = cIdx + ceil(remaining / alloc) - 1, clamped to 56, floored at live end
+  starved below minRate → E = 56 + unresolved[] with needsPagesPerWeek (TRUE saturation)
+  emit change {bookKey, from, to, oldRate, newRate, deltaWeeks} only if E != live end
+
+RETURN {changes, before, after, peakWeek, peakWeekLoad, capacity, capacitySource,
+        unresolved, markDone, invalid, locked, unchanged, asOf}
 ```
 
-**Idempotency (provable):** post-apply every active book's live end = its fitted E and `load[t] <= capacity` ∀t; rerun with the identical deterministic order accepts every book at its first candidate → empty plan → "Already balanced." Manually pushed-out ends and ahead books are structurally untouchable (never-shrink), so pins are only needed for "never push LATER" hard dates. ~12 books × 56 × 56 — trivial; no memoization.
+**Idempotency (provable, harness-verified across capacities 10–400):** post-apply every live end equals its derived E, so a rerun re-derives the identical allocation → empty plan → "Already balanced." Manually pushed-out ends and ahead books are structurally untouchable (never-shrink), so pins are only needed for "never push LATER" hard dates. **Future weeks are not hard-capped** — unmovables can make a future week run hot; that is disclosed via `peakWeek`/`peakWeekLoad` in the modal, the weekly re-run is the corrective loop, and 2.3 start-slides fix it structurally.
 
 ## 6. Apply — `applyRebalancePlan(plan)`
 

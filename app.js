@@ -1050,6 +1050,7 @@ function render() {
           <button class="btn" data-modal="add-resource">+ Add Resource</button>
           <button class="btn" data-modal="leverage"><span class="desktop-only">+ Leverage Note</span><span class="mobile-only">+ Note</span></button>
           <button class="btn" data-modal="timer">⏱ <span class="desktop-only">Timer</span></button>
+          <button class="btn" data-modal="autobalance" title="Fit end dates to your measured weekly capacity">⚖ <span class="desktop-only">Rebalance</span></button>
           <span style="flex:1;"></span>
           <button class="btn btn-ghost btn-small" data-modal="sync">Sync</button>
           <button class="btn btn-ghost btn-small" data-modal="data">Data</button>
@@ -1407,6 +1408,79 @@ function computeRebalancePlan(opts) {
   };
 }
 
+// Load-band thresholds — single source for the This Week pill and the
+// autobalance modal footer (same numbers previously inlined in
+// renderThisWeek).
+function loadBand(weeklyTarget) {
+  if (weeklyTarget < 80)  return { label: 'LIGHT',      cls: 'on-track' };
+  if (weeklyTarget < 140) return { label: 'MODERATE',   cls: 'on-track' };
+  if (weeklyTarget < 180) return { label: 'HEAVY',      cls: 'behind' };
+  return { label: 'OVERLOAD ⚠', cls: 'behind' };
+}
+
+// Effective capacity from the modal's context — clamped [10, 400]; falls
+// back to measured, then the honest default (120, labeled as such in the UI).
+function abEffectiveCapacity(ctx) {
+  let v = Math.round(+ctx.capacityInput);
+  if (isNaN(v) || v <= 0) v = (ctx.measured && ctx.measured.value != null) ? ctx.measured.value : 120;
+  return Math.max(10, Math.min(400, v));
+}
+
+// ── AUTOBALANCE APPLY (P1 #1.5) ──
+// The ONLY write path for autobalance. Follows the save-edit discipline
+// (app.js save-edit handler): capture prev via accessor BEFORE mutating,
+// write-or-DELETE-when-equal-to-default so ◆ drift badges and
+// hasScheduleOverride stay truthful, one audit entry per real change
+// (source-tagged), ONE savePersistent() per batch → one debounced gist push.
+// `prefs` ({capacityMode, manualCapacity, pinned}) persists the modal's
+// capacity choice and pins alongside a SUCCESSFUL apply only.
+function applyRebalancePlan(plan, prefs) {
+  if (!plan || !Array.isArray(plan.changes) || plan.changes.length === 0) {
+    toast('Nothing to apply');
+    return;
+  }
+  // Week-drift abort: the plan was computed against the page-load week
+  // anchor (CURRENT_* frozen in data.js). If the real week rolled over while
+  // the tab sat open, every pace number on screen is stale — reload rather
+  // than write against a phantom week.
+  const now = new Date();
+  if (dateToMonthIdx(now) * 4 + dateToWeekOfMonth(now) !== CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH) {
+    toast('Week changed since page load — reload before applying', true);
+    return;
+  }
+  const applied = [];
+  let skipped = 0;
+  plan.changes.forEach(ch => {
+    const book = BOOK_PROGRESS[ch.bookKey];
+    if (!book || isBookComplete(ch.bookKey)) { skipped++; return; }
+    const prev = getEndWeek(ch.bookKey);
+    // Per-change staleness guard: a gist pull or second-tab edit under the
+    // open modal degrades to partial-apply-with-explanation, never a blind
+    // overwrite of state the user hasn't seen.
+    if (prev !== ch.from) { skipped++; return; }
+    if (ch.to === book.endWeek) delete P.bookEndOverrides[ch.bookKey];
+    else P.bookEndOverrides[ch.bookKey] = ch.to;
+    logScheduleChange(ch.bookKey, 'endWeek', prev, getEndWeek(ch.bookKey), 'autobalance');
+    applied.push({ bookKey: ch.bookKey, from: ch.from, to: ch.to });
+  });
+  const ab = ensureAutobalanceState();
+  if (prefs) {
+    ab.capacityMode = prefs.capacityMode === 'manual' ? 'manual' : 'auto';
+    if (prefs.capacityMode === 'manual' && typeof prefs.manualCapacity === 'number') {
+      ab.manualCapacity = prefs.manualCapacity;
+    }
+    if (prefs.pinned && typeof prefs.pinned === 'object') ab.pinned = prefs.pinned;
+  }
+  ab.lastRunTs = Date.now();
+  ab.lastRun = { ts: ab.lastRunTs, capacity: plan.capacity, capacitySource: plan.capacitySource, changes: applied };
+  savePersistent();
+  closeModal(); // closes + re-renders: every surface re-derives via the accessors
+  const parts = [`⚖ Rebalanced ${applied.length} ${applied.length === 1 ? 'book' : 'books'}`];
+  if (skipped) parts.push(`${skipped} skipped (state changed)`);
+  if (plan.unresolved.length) parts.push(`${plan.unresolved.length} can't fit by Jun 2027`);
+  toast(parts.join(' · '));
+}
+
 function renderThisWeek() {
   // Reading progress for current week (P1 #1.2: shared predicate)
   const activeBooks = getActiveBookEntries();
@@ -1435,12 +1509,8 @@ function renderThisWeek() {
   // Weekly target total (P1 #1.2: shared calculator — same math, one home)
   const weeklyTarget = getWeeklyDemand().total;
 
-  // Load assessment
-  let loadLabel, loadClass;
-  if (weeklyTarget < 80) { loadLabel = 'LIGHT'; loadClass = 'on-track'; }
-  else if (weeklyTarget < 140) { loadLabel = 'MODERATE'; loadClass = 'on-track'; }
-  else if (weeklyTarget < 180) { loadLabel = 'HEAVY'; loadClass = 'behind'; }
-  else { loadLabel = 'OVERLOAD ⚠'; loadClass = 'behind'; }
+  // Load assessment (P1 #1.5: shared thresholds via loadBand)
+  const { label: loadLabel, cls: loadClass } = loadBand(weeklyTarget);
 
   // Suggestion — uses the SAME per-week target metric as the book progress card
   // for consistency. Books with no remaining-page deficit show "on pace" rather
@@ -2839,6 +2909,106 @@ function renderModal() {
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" id="ar-save">Add & Recalculate</button>
     `;
+  } else if (type === 'autobalance') {
+    // P1 #1.5: propose → preview → explicit Apply. All live form state lives
+    // on modalState.context (add-resource pattern) so full re-renders don't
+    // wipe it. The plan is recomputed on every render from ctx — deterministic
+    // solver, so toggling a lock or editing capacity refreshes the diff.
+    title = '⚖ Rebalance Schedule';
+    if (!modalState.context) modalState.context = {};
+    const ctx = modalState.context;
+    if (!ctx.init) {
+      const ab = getAutobalanceConfig();
+      ctx.init = true;
+      ctx.measured = getMeasuredCapacity();
+      ctx.capacityMode = ab.capacityMode;
+      ctx.capacityInput = (ab.capacityMode === 'manual' && ab.manualCapacity)
+        ? ab.manualCapacity
+        : (ctx.measured.value != null ? ctx.measured.value : 120);
+      // Session locks seeded from persisted pins; stale keys dropped.
+      ctx.locks = new Set(Object.keys(ab.pinned).filter(k => BOOK_PROGRESS[k]));
+    }
+    const abCapacity = abEffectiveCapacity(ctx);
+    const abSource = ctx.capacityMode === 'manual' ? 'manual' : (ctx.measured.value != null ? 'measured' : 'default');
+    const plan = computeRebalancePlan({ capacity: abCapacity, capacitySource: abSource, locks: ctx.locks });
+    ctx.plan = plan;
+
+    const capacityHelp = ctx.capacityMode === 'manual'
+      ? `Manual${ctx.measured.value != null ? ` · <a href="#" id="ab-use-measured">use measured (${ctx.measured.value} pp/wk)</a>` : ''}`
+      : (ctx.measured.value != null
+        ? `Measured: median ${ctx.measured.value} pp/wk over your last ${ctx.measured.weeksUsed} active week${ctx.measured.weeksUsed === 1 ? '' : 's'} (×0.9)`
+        : `Default — insufficient history (fewer than 2 logged weeks). Edit to set your real pace.`);
+    const lowNote = (ctx.capacityMode !== 'manual' && ctx.measured.low)
+      ? `<div class="form-help" style="color:var(--accent-warn);">Measured pace is very low — consider entering a manual number.</div>` : '';
+
+    const diffRows = plan.changes.map(ch => {
+      const dotColor = `var(--t${ch.topic || 2})`;
+      return `
+        <div class="ab-diff-row">
+          <label class="ab-lock" title="Lock: never move this book (persists after Apply)">
+            <input type="checkbox" data-ab-lock="${ch.bookKey}">🔒
+          </label>
+          <div class="ab-diff-main">
+            <div class="ab-diff-title"><span class="dot" style="background:${dotColor};"></span>${escapeHtml(ch.title)} <span class="ab-tier">${TIER[ch.tier] || ''}</span></div>
+            <div class="ab-diff-meta">${ch.remaining} pp left · ${weekLabel(ch.from)} → <strong>${weekLabel(ch.to)}</strong> (+${ch.deltaWeeks} wk) · ~${ch.oldRate} → <strong>~${ch.newRate} pp/wk</strong></div>
+          </div>
+        </div>`;
+    }).join('');
+
+    const lockedRows = plan.locked.map(l => `
+      <div class="ab-diff-row ab-locked">
+        <label class="ab-lock" title="Unlock to let autobalance move this book">
+          <input type="checkbox" data-ab-lock="${l.bookKey}" checked>🔒
+        </label>
+        <div class="ab-diff-main"><div class="ab-diff-title">${escapeHtml(l.title)}</div>
+        <div class="ab-diff-meta">Pinned — consumes capacity, never moves</div></div>
+      </div>`).join('');
+
+    const warnings = [];
+    if (plan.error === 'capacity-too-low') warnings.push('Capacity must be at least 10 pp/wk.');
+    plan.unresolved.forEach(u => warnings.push(`<strong>${escapeHtml(u.title)}</strong> doesn't fit by Jun 2027 — needs ~${u.needsPagesPerWeek} pp/wk you don't have. Cut scope, raise capacity, or unpin something.`));
+    plan.markDone.forEach(m => warnings.push(`<strong>${escapeHtml(m.title)}</strong> has 0 pages left — mark it done instead (checkbox stays the source of truth).`));
+    plan.invalid.forEach(i => warnings.push(`<strong>${escapeHtml(i.title)}</strong> has invalid scheduling and was excluded.`));
+    if (plan.peakWeekLoad > abCapacity) warnings.push(`Peak week ~${plan.peakWeekLoad} pp (${weekLabel(plan.peakWeek)}) — unmovable books overlap there; the weekly re-check will pick it up.`);
+    if (plan.changes.some(ch => +ch.to.split('-W')[0] > 5)) warnings.push(`Some new end dates fall after Oct 2026 — the Week-zoom Gantt currently shows only the first 6 months (roadmap 2.5).`);
+    if (P.sync.gistId) warnings.push(`Multi-device sync is on — Pull latest before applying if you've edited elsewhere.`);
+
+    body = `
+      <div class="form-group">
+        <label class="form-label">Weekly capacity (pages/week)</label>
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+          <input type="number" class="form-input" id="ab-capacity" value="${abCapacity}" min="10" max="400" style="max-width:110px;">
+          <div class="form-help" style="flex:1;margin-top:6px;">${capacityHelp}</div>
+        </div>
+        ${lowNote}
+      </div>
+      ${plan.changes.length === 0 && !plan.error ? `
+        <div style="padding:24px 16px;text-align:center;color:var(--accent-good);font-size:13px;border:1px dashed var(--border);border-radius:6px;">
+          ✓ Already balanced at ${abCapacity} pp/wk — nothing to move.
+        </div>
+      ` : `
+        <div class="sec-title" style="margin-top:4px;">Proposed changes (${plan.changes.length})</div>
+        <div class="ab-diff-table">${diffRows}</div>
+      `}
+      ${lockedRows ? `<div class="sec-title">Pinned (${plan.locked.length})</div><div class="ab-diff-table">${lockedRows}</div>` : ''}
+      ${plan.unchanged.length ? `
+        <details style="margin-top:10px;">
+          <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);font-family:'DM Mono',monospace;">Unchanged (${plan.unchanged.length})</summary>
+          <div style="font-size:11px;color:var(--text-secondary);padding:6px 2px;">${plan.unchanged.map(u => escapeHtml(u.title)).join(' · ')}</div>
+        </details>
+      ` : ''}
+      ${warnings.length ? `<div class="ab-warnings">${warnings.map(w => `<div class="ab-warn">⚠ ${w}</div>`).join('')}</div>` : ''}
+      <div style="font-size:10px;color:var(--text-muted);font-family:'DM Mono',monospace;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);">
+        as of ${weekLabel(plan.asOf)} · overrides only — data.js defaults untouched, ◆ marks show drift · every move lands in the Schedule Changes audit log
+      </div>
+    `;
+    footer = `
+      <div style="flex:1;font-size:11px;font-family:'DM Mono',monospace;color:var(--text-secondary);align-self:center;">
+        Weekly load: ${plan.before} pp (${loadBand(plan.before).label}) → <strong>${plan.after} pp (${loadBand(plan.after).label})</strong>
+      </div>
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="ab-apply" ${plan.changes.length === 0 || plan.error ? 'disabled' : ''}>Apply ${plan.changes.length} change${plan.changes.length === 1 ? '' : 's'}</button>
+    `;
   } else if (type === 'patch') {
     title = 'data.js Patch';
     const patch = generatePatch();
@@ -3302,6 +3472,55 @@ function bind() {
           // Re-render picks up the new entry through existing BOOK_PROGRESS iteration
           render();
         } catch (e) { console.error('add-resource save error:', e); toast('Save failed', true); }
+      });
+    }
+
+    // Autobalance modal: capacity input mirrors to ctx on every keystroke
+    // (full-innerHTML re-render kills focus, so no render on 'input');
+    // structural changes (blur/enter, lock toggles, mode switch) re-render,
+    // which recomputes the plan from ctx (deterministic solver).
+    if (modalState && modalState.type === 'autobalance') {
+      const ctx = modalState.context;
+      const capEl = document.getElementById('ab-capacity');
+      if (capEl) {
+        capEl.addEventListener('input', () => {
+          ctx.capacityInput = capEl.value;
+          ctx.capacityMode = 'manual';
+        });
+        capEl.addEventListener('change', () => render());
+      }
+      const useMeasured = document.getElementById('ab-use-measured');
+      if (useMeasured) useMeasured.addEventListener('click', e => {
+        e.preventDefault();
+        ctx.capacityMode = 'auto';
+        ctx.capacityInput = (ctx.measured && ctx.measured.value != null) ? ctx.measured.value : 120;
+        render();
+      });
+      document.querySelectorAll('[data-ab-lock]').forEach(el => {
+        el.addEventListener('change', () => {
+          const k = el.dataset.abLock;
+          if (!k) return;
+          if (el.checked) ctx.locks.add(k);
+          else ctx.locks.delete(k);
+          render();
+        });
+      });
+      const abApply = document.getElementById('ab-apply');
+      if (abApply) abApply.addEventListener('click', () => {
+        try {
+          // Recompute from current ctx — authoritative even if the last
+          // keystroke hasn't been through a re-render yet.
+          const capacity = abEffectiveCapacity(ctx);
+          const capacitySource = ctx.capacityMode === 'manual' ? 'manual' : (ctx.measured.value != null ? 'measured' : 'default');
+          const plan = computeRebalancePlan({ capacity, capacitySource, locks: ctx.locks });
+          const pinned = {};
+          ctx.locks.forEach(k => { pinned[k] = true; });
+          applyRebalancePlan(plan, {
+            capacityMode: ctx.capacityMode,
+            manualCapacity: ctx.capacityMode === 'manual' ? capacity : null,
+            pinned,
+          });
+        } catch (e) { console.error('autobalance apply error:', e); toast('Apply failed', true); }
       });
     }
 

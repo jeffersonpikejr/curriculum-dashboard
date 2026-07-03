@@ -1157,25 +1157,48 @@ function suggestRandomActivity() {
 }
 
 // ── THIS WEEK ──
-function renderThisWeek() {
-  // Reading progress for current week
-  const activeBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
+
+// P1 #1.2: the active-book predicate, extracted from renderThisWeek so the
+// autobalance solver partitions books with the exact same rule the UI uses.
+// P3 #11 semantics preserved: include overdue (cIdx > eIdx, not yet
+// complete). Without this the This Week panel silently drops past-target
+// books, hiding the very state the OVERDUE pill is supposed to surface.
+function getActiveBookEntries() {
+  const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+  return Object.entries(BOOK_PROGRESS).filter(([k, b]) => {
+    if (!b) return false;
     if (isBookComplete(k)) return false;
-    const startWeek = getStartWeek(k);
-    const endWeek = getEndWeek(k);
-    if (!startWeek || !endWeek) return false;
-    try {
-      const [sm,sw] = startWeek.split('-W').map(Number);
-      const [em,ew] = endWeek.split('-W').map(Number);
-      if ([sm,sw,em,ew].some(isNaN)) return false;
-      const sIdx = sm * 4 + sw;
-      const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
-      // P3 #11: include overdue (cIdx > eIdx, not yet complete). Without
-      // this the This Week panel silently drops past-target books, hiding
-      // the very state the OVERDUE pill is supposed to surface.
-      return cIdx >= sIdx;
-    } catch { return false; }
+    const sIdx = weekIdx(getStartWeek(k));
+    const eIdx = weekIdx(getEndWeek(k));
+    if (sIdx === null || eIdx === null) return false;
+    return cIdx >= sIdx;
   });
+}
+
+// P1 #1.2: shared weekly-demand calculator — the weeklyTarget reduce from
+// renderThisWeek, extracted verbatim so the autobalance solver's objective
+// is bit-identical to the displayed load pill BY CONSTRUCTION rather than
+// by copy discipline (this would otherwise have become the 9th inline copy
+// of the pacing math). Same ceil(remaining / weeksRem) with the same
+// weeksRemaining floor of 1 that renderBookProgress uses.
+function getWeeklyDemand() {
+  const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+  const perBook = {};
+  let total = 0;
+  getActiveBookEntries().forEach(([k, b]) => {
+    const eIdx = weekIdx(getEndWeek(k));
+    if (eIdx === null) return;
+    const weeksRem = Math.max(1, eIdx - cIdx + 1);
+    const ppw = Math.ceil(Math.max(0, (b.totalPages || 0) - getCurrentPage(k)) / weeksRem);
+    perBook[k] = ppw;
+    total += ppw;
+  });
+  return { total, perBook };
+}
+
+function renderThisWeek() {
+  // Reading progress for current week (P1 #1.2: shared predicate)
+  const activeBooks = getActiveBookEntries();
 
   // Upcoming books (start within next 4 weeks)
   const upcomingBooks = Object.entries(BOOK_PROGRESS).filter(([k,b]) => {
@@ -1198,18 +1221,8 @@ function renderThisWeek() {
   const sessionsThisWeek = last7.length;
   const streak = getStreakDays();
 
-  // Weekly target total
-  const weeklyTarget = activeBooks.reduce((sum, [k,b]) => {
-    const cur = getCurrentPage(k);
-    const endWeek = getEndWeek(k);
-    try {
-      const [em,ew] = endWeek.split('-W').map(Number);
-      const endIdx = em * 4 + ew;
-      const curIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
-      const weeksRem = Math.max(1, endIdx - curIdx + 1);
-      return sum + Math.ceil(Math.max(0, b.totalPages - cur) / weeksRem);
-    } catch { return sum; }
-  }, 0);
+  // Weekly target total (P1 #1.2: shared calculator — same math, one home)
+  const weeklyTarget = getWeeklyDemand().total;
 
   // Load assessment
   let loadLabel, loadClass;

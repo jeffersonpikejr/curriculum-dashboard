@@ -1230,6 +1230,183 @@ function getWeeklyDemand() {
   return { total, perBook };
 }
 
+// ── AUTOBALANCE SOLVER (P1 #1.4) ──
+// Pure and deterministic: no Date.now(), no randomness, no writes.
+//
+// Model: every surface displays even-spread-from-today pacing
+// (pagesPerWeek = remaining / (endWeek - today)), so every active book's
+// window contains the CURRENT week and the current week's load is exactly
+// the sum of all active rates. The solver therefore WATER-FILLS the weekly
+// capacity across active books as rates, then DERIVES each end week from
+// its allocated rate — rather than scanning candidate end weeks against a
+// per-week load test. (A scan degenerates: one pinch week created by
+// unmovable books rejects every window that crosses it and cascades the
+// whole pool to the horizon with bogus "doesn't fit" verdicts. Allocation
+// cannot cascade — a book's end moves exactly as far as its priority-fair
+// share of capacity dictates, no further.)
+//
+// Allocation, in deterministic priority order (tier asc, earlier live end,
+// larger remaining, bookKey tiebreak):
+//   pass 1 — reserve every book's minimum viable rate (remaining/horizon:
+//            the rate below which it cannot finish by Jun 2027);
+//   pass 2 — distribute the remainder by priority, each book capped at
+//            min(rateCap, live rate, remaining):
+//            · rateCap = ceil(capacity/2) when 2+ books are active — no
+//              single book eats more than half a week (weeks stay realistic
+//              in COMPOSITION, not just aggregate volume);
+//            · live rate as ceiling IS never-shrink expressed as a rate — a
+//              book can never be asked to finish EARLIER than its live end,
+//              so manual push-outs and ahead books are untouchable;
+//            · remaining, because a rate above "finish this week" is waste.
+//
+// Guarantees:
+// - Fitted current-week load ≤ capacity (the This Week pill and the
+//   behind-banner trigger measure exactly this).
+// - IDEMPOTENT: post-apply every live end equals its derived end, so a
+//   rerun re-derives the identical allocation and returns an empty plan
+//   ("Already balanced").
+// - UNRESOLVED means genuine saturation — the capacity ran out before the
+//   book's minimum viable rate could be reserved. "Doesn't fit by Jun 2027"
+//   is then literally true, never a pinch artifact.
+// - Future weeks are NOT hard-capped: pre-charged unmovables (pins, a fat
+//   upcoming book) can make a future week run hot. That is surfaced via
+//   peakWeek/peakWeekLoad instead of poisoning the plan — the weekly
+//   rolling re-run (banner refires when demand jumps) is the corrective
+//   loop, and P2 start-slides address it structurally.
+//
+// locks: Set<bookKey> (session locks ∪ persisted pins). Locked and upcoming
+// (not-yet-started) books never move but PRE-CHARGE their even-spread load —
+// a locked ACTIVE book consumes current-week budget before allocation, so
+// pinning an overdue monster honestly starves everything else.
+function computeRebalancePlan(opts) {
+  const capacity = Math.round(+((opts && opts.capacity)) || 0);
+  const capacitySource = (opts && opts.capacitySource) || 'manual';
+  const lockSet = (opts && opts.locks instanceof Set) ? opts.locks : new Set();
+  if (!isFinite(capacity) || capacity < 10) {
+    return { error: 'capacity-too-low', capacity, capacitySource, changes: [], unresolved: [], markDone: [], invalid: [], locked: [], unchanged: [], asOf: CURRENT_WEEK_KEY };
+  }
+  const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+
+  // POOL — every non-complete book, via the live accessors (draft books
+  // participate through the same BOOK_PROGRESS iteration as everywhere else).
+  const pool = [], markDone = [], invalid = [];
+  Object.entries(BOOK_PROGRESS).forEach(([k, b]) => {
+    if (!b || isBookComplete(k)) return;
+    const sIdx = weekIdx(getStartWeek(k));
+    const eIdx = weekIdx(getEndWeek(k));
+    if (sIdx === null || eIdx === null) {
+      // Mirrors the "⚠ Invalid scheduling" card path — excluded but listed.
+      invalid.push({ bookKey: k, title: b.title || k });
+      return;
+    }
+    const remaining = Math.max(0, (b.totalPages || 0) - getCurrentPage(k));
+    if (remaining === 0) {
+      // Finished reading but checkbox not ticked. Completion is the
+      // checkbox's job (P3 #13) — never write bookCompleted from here.
+      markDone.push({ bookKey: k, title: b.title || k });
+      return;
+    }
+    pool.push({ k, b, sIdx, eIdx, remaining, tier: tierOf(b.topic) });
+  });
+
+  const locked   = pool.filter(x => lockSet.has(x.k));
+  const upcoming = pool.filter(x => !lockSet.has(x.k) && x.sIdx > cIdx);
+  const active   = pool.filter(x => !lockSet.has(x.k) && x.sIdx <= cIdx); // == getActiveBookEntries predicate
+
+  // PRE-CHARGE — locked + upcoming books consume capacity but never move.
+  const load = new Array(MAX_WEEK_IDX + 1).fill(0);
+  locked.concat(upcoming).forEach(x => {
+    const w0 = Math.max(x.sIdx, cIdx);
+    const w1 = Math.min(Math.max(x.eIdx, w0), MAX_WEEK_IDX);
+    const rate = x.remaining / (w1 - w0 + 1);
+    for (let t = w0; t <= w1; t++) load[t] += rate;
+  });
+
+  // ALLOCATE — water-fill the current week's remaining budget across active
+  // books in deterministic priority order (same state → same proposal).
+  active.sort((a, b) =>
+    a.tier - b.tier || a.eIdx - b.eIdx || b.remaining - a.remaining || (a.k < b.k ? -1 : 1));
+  const t0 = cIdx;
+  const rateCap = active.length >= 2 ? Math.ceil(capacity * 0.5) : capacity;
+  const EPS = 1e-6; // float tolerance
+  const horizonWeeks = MAX_WEEK_IDX - t0 + 1;
+  const minRate = x => x.remaining / horizonWeeks;
+  const maxRate = x => {
+    const liveWindow = x.eIdx - t0 + 1; // ≤ 0 when overdue → no live ceiling
+    const liveRate = liveWindow > 0 ? x.remaining / liveWindow : Infinity;
+    // max(minRate, …): a monster book whose minimum viable rate exceeds
+    // rateCap must still be allowed to fit by the horizon.
+    return Math.max(minRate(x), Math.min(rateCap, liveRate, x.remaining));
+  };
+  // Locked ACTIVE books already pre-charged the current week — they consume
+  // budget before allocation (upcoming pre-charges never overlap t0).
+  let budget = Math.max(0, capacity - load[t0]);
+  const alloc = new Map();
+  // pass 1 — minimum viable reservations, priority order
+  active.forEach(x => {
+    const r = Math.min(minRate(x), budget);
+    alloc.set(x.k, r);
+    budget -= r;
+  });
+  // pass 2 — distribute the remainder by priority, up to each book's cap
+  active.forEach(x => {
+    if (budget <= EPS) return;
+    const bump = Math.min(maxRate(x) - alloc.get(x.k), budget);
+    if (bump > 0) { alloc.set(x.k, alloc.get(x.k) + bump); budget -= bump; }
+  });
+
+  // DERIVE — end week from allocated rate; commit even-spread load.
+  const changes = [], unresolved = [], unchanged = [];
+  active.forEach(x => {
+    const r = alloc.get(x.k);
+    const starved = r + EPS < minRate(x); // budget ran out below minimum viable
+    let eFinal;
+    if (starved) {
+      eFinal = MAX_WEEK_IDX; // clamp to horizon, flagged honestly below
+      unresolved.push({
+        bookKey: x.k, title: x.b.title || x.k,
+        needsPagesPerWeek: Math.ceil(minRate(x)),
+      });
+    } else {
+      eFinal = Math.min(MAX_WEEK_IDX, t0 + Math.ceil(x.remaining / r) - 1);
+      eFinal = Math.max(eFinal, x.eIdx, t0); // never-shrink (ceil-edge safety)
+    }
+    const commitRate = x.remaining / (eFinal - t0 + 1);
+    for (let t = t0; t <= eFinal; t++) load[t] += commitRate;
+    if (eFinal !== x.eIdx) {
+      changes.push({
+        bookKey: x.k, title: x.b.title || x.k, topic: x.b.topic, tier: x.tier,
+        remaining: x.remaining,
+        from: idxToWeekKey(x.eIdx), to: idxToWeekKey(eFinal),
+        // oldRate matches the OVERDUE floor semantics the pace pills display
+        oldRate: Math.ceil(x.remaining / Math.max(1, x.eIdx - cIdx + 1)),
+        newRate: Math.ceil(commitRate),
+        deltaWeeks: eFinal - x.eIdx,
+      });
+    } else {
+      unchanged.push({ bookKey: x.k, title: x.b.title || x.k });
+    }
+  });
+
+  // Peak committed week — surfaced so the modal can be honest about pinch
+  // weeks that run hot (cumulative feasibility allows them; see header note).
+  let peakLoad = 0, peakIdx = cIdx;
+  for (let t = cIdx; t <= MAX_WEEK_IDX; t++) {
+    if (load[t] > peakLoad) { peakLoad = load[t]; peakIdx = t; }
+  }
+
+  return {
+    changes, unresolved, markDone, invalid, unchanged,
+    locked: locked.map(x => ({ bookKey: x.k, title: x.b.title || x.k })),
+    before: getWeeklyDemand().total,
+    after: Math.round(load[cIdx]),
+    peakWeekLoad: Math.round(peakLoad),
+    peakWeek: idxToWeekKey(peakIdx),
+    capacity, capacitySource,
+    asOf: CURRENT_WEEK_KEY,
+  };
+}
+
 function renderThisWeek() {
   // Reading progress for current week (P1 #1.2: shared predicate)
   const activeBooks = getActiveBookEntries();

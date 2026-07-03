@@ -17,7 +17,7 @@
 // (if the version doesn't change, the commit didn't fire or your browser
 // served a cached file). DO NOT EDIT MANUALLY — commit.ps1 regex-replaces this
 // line; manual edits will be overwritten on the next commit.
-const APP_VERSION = 'v25 | 2026-05-19 10:40';
+const APP_VERSION = 'v26 | 2026-07-03 autobalance';
 
 // ── STATE & PERSISTENCE ──
 let S = { tab:"this-week", zoom:"monthly", tier:"all", detail:3, viewDate: null /* 'YYYY-MM-DD' or null = today */, bookOverlay: true, topicFilter: null /* null = all topics; otherwise Set<number> */, topicFilterOpen: false };
@@ -1512,6 +1512,24 @@ function renderThisWeek() {
   // Load assessment (P1 #1.5: shared thresholds via loadBand)
   const { label: loadLabel, cls: loadClass } = loadBand(weeklyTarget);
 
+  // P1 #1.6: capacity-relative behind detection. Computed fresh on every
+  // render, never stored, never auto-fires — the banner only OFFERS the
+  // rebalance. Capacity-relative predicate adapts to the actual reader
+  // (demand > 1.25× measured pace); the OVERLOAD band stays as an absolute
+  // backstop when there's no measured pace to compare against. Snooze is a
+  // week index, not a wall-clock delay — it re-arms next curriculum week.
+  const abConf = getAutobalanceConfig();
+  const abMeasured = getMeasuredCapacity();
+  const abCap = (abConf.capacityMode === 'manual' && abConf.manualCapacity) ? abConf.manualCapacity : abMeasured.value;
+  const curIdxNow = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+  const overdueCount = activeBooks.reduce((n, [k]) => {
+    const e = weekIdx(getEndWeek(k));
+    return n + (e !== null && curIdxNow > e ? 1 : 0);
+  }, 0);
+  const behind = overdueCount > 0 || (abCap != null && weeklyTarget > abCap * 1.25) || weeklyTarget >= 180;
+  const snoozed = abConf.dismissedUntilIdx !== null && curIdxNow < abConf.dismissedUntilIdx;
+  const showRebalanceBanner = behind && !snoozed && activeBooks.length > 0;
+
   // Suggestion — uses the SAME per-week target metric as the book progress card
   // for consistency. Books with no remaining-page deficit show "on pace" rather
   // than picking a "behind" book.
@@ -1577,6 +1595,18 @@ function renderThisWeek() {
           <span class="desktop-only">Weekly target: </span><span class="mobile-only">Target: </span><strong>${suggestion.pagesPerWeek} pp</strong>${suggestion.pagesThisWeekForBook > 0 ? ` · <span class="desktop-only">logged this week: </span><span class="mobile-only">done: </span>${suggestion.pagesThisWeekForBook} pp` : ''}${suggestion.weeklyGap > 0 ? ` · <span style="color:var(--accent-warn);">${suggestion.weeklyGap} pp short</span>` : ' · on pace'}
         </div>
         <button class="btn btn-primary btn-small" data-modal="log-session" data-book="${suggestion.key}"><span class="desktop-only">+ Log Session for This</span><span class="mobile-only">+ Log This</span></button>
+      </div>
+    ` : ''}
+
+    ${showRebalanceBanner ? `
+      <div class="rebalance-banner">
+        <div class="rebalance-banner-text">
+          <strong>Plan asks ${weeklyTarget} pp/wk</strong>${abCap != null ? ` · your measured pace is ~${abCap} pp/wk` : ' · no measured pace yet'}${overdueCount ? ` · ${overdueCount} overdue` : ''}
+        </div>
+        <div class="rebalance-banner-actions">
+          <button class="btn btn-small btn-primary" data-modal="autobalance">⚖ Rebalance</button>
+          <button class="btn btn-small btn-ghost" id="ab-snooze" title="Hide until next curriculum week">Snooze</button>
+        </div>
       </div>
     ` : ''}
 
@@ -2533,11 +2563,15 @@ function renderLog() {
       const book = BOOK_PROGRESS[e.bookKey];
       const title = book ? book.title : (e.bookKey || '?');
       const fieldLabel = e.field === 'startWeek' ? 'Start' : (e.field === 'endWeek' ? 'End' : e.field);
+      // P1 #1.6: provenance chip — automated writes are visually distinct
+      // from manual edits, so the audit trail keeps its chronic-slip signal.
+      const sourceChip = e.source === 'autobalance' ? '<span class="auto-chip">⚖ auto</span>'
+        : e.source === 'autobalance-undo' ? '<span class="auto-chip">⚖ undo</span>' : '';
       return `
         <div class="log-entry">
           <div class="log-entry-head">
             <div>
-              <div class="log-entry-book">${escapeHtml(title)} · ${fieldLabel}</div>
+              <div class="log-entry-book">${escapeHtml(title)} · ${fieldLabel}${sourceChip}</div>
               <div class="log-entry-meta">${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})} · ${escapeHtml(weekLabel(e.from))} → ${escapeHtml(weekLabel(e.to))}</div>
             </div>
           </div>
@@ -3474,6 +3508,16 @@ function bind() {
         } catch (e) { console.error('add-resource save error:', e); toast('Save failed', true); }
       });
     }
+
+    // P1 #1.6: behind-banner snooze — suppresses until the NEXT curriculum
+    // week (a week index, not a wall-clock delay), then re-arms.
+    const abSnooze = document.getElementById('ab-snooze');
+    if (abSnooze) abSnooze.addEventListener('click', () => {
+      const ab = ensureAutobalanceState();
+      ab.dismissedUntilIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH + 1;
+      savePersistent();
+      render();
+    });
 
     // Autobalance modal: capacity input mirrors to ctx on every keystroke
     // (full-innerHTML re-render kills focus, so no render on 'input');

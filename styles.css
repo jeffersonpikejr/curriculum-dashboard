@@ -916,3 +916,18 @@ body.mobile-active .dn-back { font-size: 8px; padding: 1px 4px; }
   background: rgba(245, 158, 11, 0.08); border-left: 2px solid var(--accent-warn);
   border-radius: 0 4px 4px 0; color: var(--text-secondary);
 }
+
+.rebalance-banner {
+  display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 14px;
+  background: rgba(245, 158, 11, 0.07);
+  border: 1px solid rgba(245, 158, 11, 0.25); border-left: 3px solid var(--accent-warn);
+  border-radius: 6px; font-size: 12px; color: var(--text-secondary);
+}
+.rebalance-banner strong { color: var(--text-primary); }
+.rebalance-banner-actions { display: flex; gap: 8px; flex: none; }
+.auto-chip {
+  font-size: 9px; font-family: 'DM Mono', monospace; padding: 1px 5px; margin-left: 6px;
+  border-radius: 3px; background: var(--bg-card); color: var(--accent-warn);
+  border: 1px solid rgba(245, 158, 11, 0.25); vertical-align: middle;
+}

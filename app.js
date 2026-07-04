@@ -408,16 +408,26 @@ function getSessionsInRange(daysBack) {
 // down (the month-gap scenario), while a single binge week doesn't inflate
 // it (the mean would). Requires ≥2 qualifying weeks; otherwise returns
 // {value: null} and the caller shows an honestly-labeled default.
-// Sessions bucket via localDayKey (LOCAL day — see the app.js:31 invariant,
-// never toISOString) → dateToWeekKey → weekIdx.
+// Only READING sessions count: a notes/duration-only session (0 pages) does
+// not make its week a "reading week", so it never enters the median — else a
+// week of pure reflection notes would count as a 0 and drag measured pace
+// toward zero (which would floor the plan at 10 pp/wk and over-compress it).
+// Pages coerced to a number (a corrupted import/gist could carry a string;
+// app-logged sessions are already numeric). Weeks bucket via the SAME
+// quartile anchor as cIdx (dateToMonthIdx*4 + dateToWeekOfMonth) rather than
+// dateToWeekKey's nearest-midpoint snap, so a late-month session can't leak
+// into the next month's W1. Date methods are local-time, honoring the
+// app.js:31 local-day invariant (never toISOString).
 function getMeasuredCapacity() {
   const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
   const sums = {};
   P.sessions.forEach(s => {
     if (!s || typeof s.ts !== 'number') return;
-    const idx = weekIdx(dateToWeekKey(localDayKey(s.ts)));
-    if (idx === null) return;
-    sums[idx] = (sums[idx] || 0) + (s.pagesRead || 0);
+    const pages = +s.pagesRead || 0;
+    if (pages <= 0) return; // notes/duration-only session — not a reading week
+    const d = new Date(s.ts);
+    const idx = dateToMonthIdx(d) * 4 + dateToWeekOfMonth(d);
+    sums[idx] = (sums[idx] || 0) + pages;
   });
   const qualifying = [];
   for (let i = Math.max(1, cIdx - 6); i <= cIdx - 1; i++) {
@@ -2976,11 +2986,11 @@ function renderModal() {
       ? `<div class="form-help" style="color:var(--accent-warn);">Measured pace is very low — consider entering a manual number.</div>` : '';
 
     const diffRows = plan.changes.map(ch => {
-      const dotColor = `var(--t${ch.topic || 2})`;
+      const dotColor = `var(--t${+ch.topic || 2})`;
       return `
         <div class="ab-diff-row">
           <label class="ab-lock" title="Lock: never move this book (persists after Apply)">
-            <input type="checkbox" data-ab-lock="${ch.bookKey}">🔒
+            <input type="checkbox" data-ab-lock="${escapeHtml(ch.bookKey)}">🔒
           </label>
           <div class="ab-diff-main">
             <div class="ab-diff-title"><span class="dot" style="background:${dotColor};"></span>${escapeHtml(ch.title)} <span class="ab-tier">${TIER[ch.tier] || ''}</span></div>
@@ -2992,7 +3002,7 @@ function renderModal() {
     const lockedRows = plan.locked.map(l => `
       <div class="ab-diff-row ab-locked">
         <label class="ab-lock" title="Unlock to let autobalance move this book">
-          <input type="checkbox" data-ab-lock="${l.bookKey}" checked>🔒
+          <input type="checkbox" data-ab-lock="${escapeHtml(l.bookKey)}" checked>🔒
         </label>
         <div class="ab-diff-main"><div class="ab-diff-title">${escapeHtml(l.title)}</div>
         <div class="ab-diff-meta">Pinned — consumes capacity, never moves</div></div>
@@ -3531,7 +3541,20 @@ function bind() {
           ctx.capacityInput = capEl.value;
           ctx.capacityMode = 'manual';
         });
-        capEl.addEventListener('change', () => render());
+        // Refresh the preview when capacity is committed — but NOT by
+        // re-rendering mid-click. A full innerHTML re-render replaces the DOM;
+        // if it fires because the field blurred from a click on Apply / a lock
+        // / Cancel, it destroys that control before its own handler runs and
+        // the click is silently swallowed (user has to click twice). So skip
+        // the render when focus is moving to another in-modal control — that
+        // control recomputes the plan from ctx itself, and Apply reads ctx
+        // authoritatively, so nothing is lost. Enter commits explicitly.
+        capEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); render(); } });
+        capEl.addEventListener('blur', e => {
+          const rt = e.relatedTarget;
+          if (rt && rt.closest && rt.closest('.modal')) return;
+          render();
+        });
       }
       const useMeasured = document.getElementById('ab-use-measured');
       if (useMeasured) useMeasured.addEventListener('click', e => {
@@ -3558,6 +3581,12 @@ function bind() {
           const capacitySource = ctx.capacityMode === 'manual' ? 'manual' : (ctx.measured.value != null ? 'measured' : 'default');
           const plan = computeRebalancePlan({ capacity, capacitySource, locks: ctx.locks });
           const pinned = {};
+          // Preserve pins for books not present on THIS device (e.g. a draft
+          // that only exists on another synced device) — the modal only seeds
+          // locks for books in BOOK_PROGRESS, so rebuilding pins purely from
+          // ctx.locks would drop and then sync-away those absent-book pins.
+          const existingPins = getAutobalanceConfig().pinned;
+          Object.keys(existingPins).forEach(k => { if (!BOOK_PROGRESS[k]) pinned[k] = true; });
           ctx.locks.forEach(k => { pinned[k] = true; });
           applyRebalancePlan(plan, {
             capacityMode: ctx.capacityMode,

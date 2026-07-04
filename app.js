@@ -1300,54 +1300,38 @@ function getWeeklyDemand() {
   return { total, perBook };
 }
 
-// ── AUTOBALANCE SOLVER (P1 #1.4) ──
+// ── AUTOBALANCE SOLVER — FOCUS MODE (P2 #2.3) ──
 // Pure and deterministic: no Date.now(), no randomness, no writes.
 //
-// Model: every surface displays even-spread-from-today pacing
-// (pagesPerWeek = remaining / (endWeek - today)), so every active book's
-// window contains the CURRENT week and the current week's load is exactly
-// the sum of all active rates. The solver therefore WATER-FILLS the weekly
-// capacity across active books as rates, then DERIVES each end week from
-// its allocated rate — rather than scanning candidate end weeks against a
-// per-week load test. (A scan degenerates: one pinch week created by
-// unmovable books rejects every window that crosses it and cascades the
-// whole pool to the horizon with bogus "doesn't fit" verdicts. Allocation
-// cannot cascade — a book's end moves exactly as far as its priority-fair
-// share of capacity dictates, no further.)
+// Philosophy (replaces P1's spread/water-fill): rather than give every active
+// book a thin weekly slice — which trickled low-priority books to Jun 2027 at
+// 2–5 pp/wk — FOCUS fully funds books in priority order and SEQUENCES the
+// rest. It walks a per-week load timeline and places each book, in priority
+// order, into the earliest contiguous window (from its earliest legal start)
+// where it can read at a real "lane" pace without pushing any week over
+// capacity. Two lanes run concurrently (laneRate = floor(capacity/2)), so ~2
+// books are in flight at once and lower-priority books DEFER — their start
+// slides to when a leader finishes and frees a lane. Each book's start AND end
+// are derived from its placement, so this subsumes P2's start-slides
+// (deferrals slide the start) and ahead-compression (a funded leader's end is
+// pulled in to its fast-pace finish).
 //
-// Allocation, in deterministic priority order (tier asc, earlier live end,
-// larger remaining, bookKey tiebreak):
-//   pass 1 — reserve every book's minimum viable rate (remaining/horizon:
-//            the rate below which it cannot finish by Jun 2027);
-//   pass 2 — distribute the remainder by priority, each book capped at
-//            min(rateCap, live rate, remaining):
-//            · rateCap = ceil(capacity/2) when 2+ books are active — no
-//              single book eats more than half a week (weeks stay realistic
-//              in COMPOSITION, not just aggregate volume);
-//            · live rate as ceiling IS never-shrink expressed as a rate — a
-//              book can never be asked to finish EARLIER than its live end,
-//              so manual push-outs and ahead books are untouchable;
-//            · remaining, because a rate above "finish this week" is waste.
+// Priority order: tier asc (Sprint→Core→…), earlier live end, larger
+// remaining, bookKey tiebreak — deterministic, so same state → same plan.
 //
 // Guarantees:
-// - Fitted current-week load ≤ capacity (the This Week pill and the
-//   behind-banner trigger measure exactly this).
-// - IDEMPOTENT: post-apply every live end equals its derived end, so a
-//   rerun re-derives the identical allocation and returns an empty plan
-//   ("Already balanced").
-// - UNRESOLVED means genuine saturation — the capacity ran out before the
-//   book's minimum viable rate could be reserved. "Doesn't fit by Jun 2027"
-//   is then literally true, never a pinch artifact.
-// - Future weeks are NOT hard-capped: pre-charged unmovables (pins, a fat
-//   upcoming book) can make a future week run hot. That is surfaced via
-//   peakWeek/peakWeekLoad instead of poisoning the plan — the weekly
-//   rolling re-run (banner refires when demand jumps) is the corrective
-//   loop, and P2 start-slides address it structurally.
+// - No week exceeds capacity by construction (every placement is fit-tested).
+// - IDEMPOTENT: post-apply each book's live start/end equals its placement, so
+//   a rerun re-derives the identical schedule and returns an empty plan.
+// - Never starts a book EARLIER than max(today, its live start) — active books
+//   can pause-and-resume (start slides later) but are never pulled into the
+//   past; upcoming books never jump ahead of their planned start.
+// - UNRESOLVED means genuine saturation — no capacity-respecting window exists
+//   before Jun 2027 even at the reduced horizon rate.
 //
-// locks: Set<bookKey> (session locks ∪ persisted pins). Locked and upcoming
-// (not-yet-started) books never move but PRE-CHARGE their even-spread load —
-// a locked ACTIVE book consumes current-week budget before allocation, so
-// pinning an overdue monster honestly starves everything else.
+// locks: Set<bookKey> (session locks ∪ persisted pins). Locked books never
+// move and PRE-CHARGE their live even-spread load, so pinning an overdue
+// monster honestly consumes lanes and pushes everything else later.
 function computeRebalancePlan(opts) {
   const capacity = Math.round(+((opts && opts.capacity)) || 0);
   const capacitySource = (opts && opts.capacitySource) || 'manual';
@@ -1356,6 +1340,7 @@ function computeRebalancePlan(opts) {
     return { error: 'capacity-too-low', capacity, capacitySource, changes: [], unresolved: [], markDone: [], invalid: [], locked: [], unchanged: [], asOf: CURRENT_WEEK_KEY };
   }
   const cIdx = CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+  const EPS = 1e-6;
 
   // POOL — every non-complete book, via the live accessors (draft books
   // participate through the same BOOK_PROGRESS iteration as everywhere else).
@@ -1379,87 +1364,84 @@ function computeRebalancePlan(opts) {
     pool.push({ k, b, sIdx, eIdx, remaining, tier: tierOf(b.topic) });
   });
 
-  const locked   = pool.filter(x => lockSet.has(x.k));
-  const upcoming = pool.filter(x => !lockSet.has(x.k) && x.sIdx > cIdx);
-  const active   = pool.filter(x => !lockSet.has(x.k) && x.sIdx <= cIdx); // == getActiveBookEntries predicate
+  const locked      = pool.filter(x => lockSet.has(x.k));
+  const schedulable = pool.filter(x => !lockSet.has(x.k)); // active + upcoming, focus-sequenced
 
-  // PRE-CHARGE — locked + upcoming books consume capacity but never move.
+  // PRE-CHARGE — locked books consume capacity across their live window but
+  // never move. (Upcoming books are NOT pre-charged here — focus schedules
+  // them below, sliding their start when the near-term is saturated.)
   const load = new Array(MAX_WEEK_IDX + 1).fill(0);
-  locked.concat(upcoming).forEach(x => {
+  locked.forEach(x => {
     const w0 = Math.max(x.sIdx, cIdx);
     const w1 = Math.min(Math.max(x.eIdx, w0), MAX_WEEK_IDX);
     const rate = x.remaining / (w1 - w0 + 1);
     for (let t = w0; t <= w1; t++) load[t] += rate;
   });
 
-  // ALLOCATE — water-fill the current week's remaining budget across active
-  // books in deterministic priority order (same state → same proposal).
-  active.sort((a, b) =>
+  // FOCUS PLACEMENT — priority order, earliest capacity-respecting window.
+  schedulable.sort((a, b) =>
     a.tier - b.tier || a.eIdx - b.eIdx || b.remaining - a.remaining || (a.k < b.k ? -1 : 1));
-  const t0 = cIdx;
-  const rateCap = active.length >= 2 ? Math.ceil(capacity * 0.5) : capacity;
-  const EPS = 1e-6; // float tolerance
-  const horizonWeeks = MAX_WEEK_IDX - t0 + 1;
-  const minRate = x => x.remaining / horizonWeeks;
-  const maxRate = x => {
-    const liveWindow = x.eIdx - t0 + 1; // ≤ 0 when overdue → no live ceiling
-    const liveRate = liveWindow > 0 ? x.remaining / liveWindow : Infinity;
-    // max(minRate, …): a monster book whose minimum viable rate exceeds
-    // rateCap must still be allowed to fit by the horizon.
-    return Math.max(minRate(x), Math.min(rateCap, liveRate, x.remaining));
-  };
-  // Locked ACTIVE books already pre-charged the current week — they consume
-  // budget before allocation (upcoming pre-charges never overlap t0).
-  let budget = Math.max(0, capacity - load[t0]);
-  const alloc = new Map();
-  // pass 1 — minimum viable reservations, priority order
-  active.forEach(x => {
-    const r = Math.min(minRate(x), budget);
-    alloc.set(x.k, r);
-    budget -= r;
-  });
-  // pass 2 — distribute the remainder by priority, up to each book's cap
-  active.forEach(x => {
-    if (budget <= EPS) return;
-    const bump = Math.min(maxRate(x) - alloc.get(x.k), budget);
-    if (bump > 0) { alloc.set(x.k, alloc.get(x.k) + bump); budget -= bump; }
-  });
+  // laneRate = floor(capacity/2): two full lanes fit (2·floor ≤ capacity), so
+  // ~2 books run at once; a smaller book uses less and lets a third squeeze in.
+  const laneRate = Math.max(1, Math.floor(capacity / 2));
 
-  // DERIVE — end week from allocated rate; commit even-spread load.
   const changes = [], unresolved = [], unchanged = [];
-  active.forEach(x => {
-    const r = alloc.get(x.k);
-    const starved = r + EPS < minRate(x); // budget ran out below minimum viable
-    let eFinal;
-    if (starved) {
-      eFinal = MAX_WEEK_IDX; // clamp to horizon, flagged honestly below
-      unresolved.push({
-        bookKey: x.k, title: x.b.title || x.k,
-        needsPagesPerWeek: Math.ceil(minRate(x)),
-      });
-    } else {
-      eFinal = Math.min(MAX_WEEK_IDX, t0 + Math.ceil(x.remaining / r) - 1);
-      eFinal = Math.max(eFinal, x.eIdx, t0); // never-shrink (ceil-edge safety)
+  schedulable.forEach(x => {
+    const earliest = Math.max(cIdx, x.sIdx); // never before today or its planned start
+    const rate = Math.min(x.remaining, laneRate);
+    const duration = Math.max(1, Math.ceil(x.remaining / rate));
+    // Slide the start forward to the first window [s, s+duration-1] that fits
+    // under capacity given everything placed so far.
+    let s0 = null;
+    for (let s = earliest; s + duration - 1 <= MAX_WEEK_IDX; s++) {
+      let fits = true;
+      for (let t = s; t <= s + duration - 1; t++) {
+        if (load[t] + rate > capacity + EPS) { fits = false; break; }
+      }
+      if (fits) { s0 = s; break; }
     }
-    const commitRate = x.remaining / (eFinal - t0 + 1);
-    for (let t = t0; t <= eFinal; t++) load[t] += commitRate;
-    if (eFinal !== x.eIdx) {
+    // Reading window [readFrom, readTo] is where load is committed. The
+    // RECORDED start only moves when the book is DEFERRED to begin later than
+    // now — an active book that keeps reading from this week retains its
+    // historical (possibly past) start, so it doesn't spuriously read as
+    // "starting now". Upcoming books record wherever they were placed.
+    let readFrom, eFinal, placedRate;
+    if (s0 !== null) {
+      readFrom = s0; eFinal = s0 + duration - 1; placedRate = rate;
+    } else {
+      // Saturated — no full-lane window fits by the horizon. Fall back to the
+      // widest honest window (earliest → Jun 2027) at the reduced even rate;
+      // flagged unresolved. May run some weeks hot (surfaced via peakWeek).
+      readFrom = Math.min(earliest, MAX_WEEK_IDX);
+      eFinal = MAX_WEEK_IDX;
+      placedRate = x.remaining / (eFinal - readFrom + 1);
+      unresolved.push({ bookKey: x.k, title: x.b.title || x.k, needsPagesPerWeek: Math.ceil(placedRate) });
+    }
+    for (let t = readFrom; t <= eFinal; t++) load[t] += placedRate;
+    const sFinal = (x.sIdx <= cIdx && readFrom <= cIdx) ? x.sIdx : readFrom;
+
+    const startMoved = sFinal !== x.sIdx;
+    const endMoved   = eFinal !== x.eIdx;
+    if (startMoved || endMoved) {
       changes.push({
         bookKey: x.k, title: x.b.title || x.k, topic: x.b.topic, tier: x.tier,
         remaining: x.remaining,
-        from: idxToWeekKey(x.eIdx), to: idxToWeekKey(eFinal),
-        // oldRate matches the OVERDUE floor semantics the pace pills display
+        fromStart: idxToWeekKey(x.sIdx), toStart: idxToWeekKey(sFinal),
+        fromEnd: idxToWeekKey(x.eIdx),   toEnd: idxToWeekKey(eFinal),
+        startDelta: sFinal - x.sIdx,
+        endDelta: eFinal - x.eIdx,
+        // deferred = an active book pushed to start in the future (paused)
+        deferred: x.sIdx <= cIdx && sFinal > cIdx,
         oldRate: Math.ceil(x.remaining / Math.max(1, x.eIdx - cIdx + 1)),
-        newRate: Math.ceil(commitRate),
-        deltaWeeks: eFinal - x.eIdx,
+        newRate: Math.ceil(placedRate),
       });
     } else {
       unchanged.push({ bookKey: x.k, title: x.b.title || x.k });
     }
   });
 
-  // Peak committed week — surfaced so the modal can be honest about pinch
-  // weeks that run hot (cumulative feasibility allows them; see header note).
+  // Peak committed week — surfaced so the modal can flag any week that runs
+  // hot (only possible via pins or an unresolved fallback).
   let peakLoad = 0, peakIdx = cIdx;
   for (let t = cIdx; t <= MAX_WEEK_IDX; t++) {
     if (load[t] > peakLoad) { peakLoad = load[t]; peakIdx = t; }
@@ -1521,15 +1503,21 @@ function applyRebalancePlan(plan, prefs) {
   plan.changes.forEach(ch => {
     const book = BOOK_PROGRESS[ch.bookKey];
     if (!book || isBookComplete(ch.bookKey)) { skipped++; return; }
-    const prev = getEndWeek(ch.bookKey);
+    const prevStart = getStartWeek(ch.bookKey);
+    const prevEnd   = getEndWeek(ch.bookKey);
     // Per-change staleness guard: a gist pull or second-tab edit under the
     // open modal degrades to partial-apply-with-explanation, never a blind
-    // overwrite of state the user hasn't seen.
-    if (prev !== ch.from) { skipped++; return; }
-    if (ch.to === book.endWeek) delete P.bookEndOverrides[ch.bookKey];
-    else P.bookEndOverrides[ch.bookKey] = ch.to;
-    logScheduleChange(ch.bookKey, 'endWeek', prev, getEndWeek(ch.bookKey), 'autobalance');
-    applied.push({ bookKey: ch.bookKey, from: ch.from, to: ch.to });
+    // overwrite of state the user hasn't seen. Focus mode moves start AND end,
+    // so both must still match what the plan was computed against.
+    if (prevStart !== ch.fromStart || prevEnd !== ch.fromEnd) { skipped++; return; }
+    // Write-or-delete-when-equal-to-default so ◆ drift badges stay truthful.
+    if (ch.toStart === book.startWeek) delete P.bookStartOverrides[ch.bookKey];
+    else P.bookStartOverrides[ch.bookKey] = ch.toStart;
+    if (ch.toEnd === book.endWeek) delete P.bookEndOverrides[ch.bookKey];
+    else P.bookEndOverrides[ch.bookKey] = ch.toEnd;
+    logScheduleChange(ch.bookKey, 'startWeek', prevStart, getStartWeek(ch.bookKey), 'autobalance');
+    logScheduleChange(ch.bookKey, 'endWeek',   prevEnd,   getEndWeek(ch.bookKey),   'autobalance');
+    applied.push({ bookKey: ch.bookKey, fromStart: ch.fromStart, toStart: ch.toStart, fromEnd: ch.fromEnd, toEnd: ch.toEnd });
   });
   const ab = ensureAutobalanceState();
   if (prefs) {
@@ -1551,11 +1539,12 @@ function applyRebalancePlan(plan, prefs) {
 
 // ── AUTOBALANCE UNDO (P2 #2.1) ──
 // Reverse the most recent apply through the SAME write path: restore each
-// book's end to its pre-rebalance value (delete-when-equal-to-default so drift
-// badges stay truthful), audit-tagged 'autobalance-undo'. Per-change guard:
-// only revert a book whose end is still where the rebalance left it, so a
-// manual edit made after the rebalance is respected, not clobbered. The run
-// is consumed (lastRun cleared) so undo can't double-apply.
+// book's start AND end to its pre-rebalance value (delete-when-equal-to-default
+// so drift badges stay truthful), audit-tagged 'autobalance-undo'. Per-change
+// guard: only revert a book whose start+end are still where the rebalance left
+// them, so a manual edit made after the rebalance is respected, not clobbered.
+// The run is consumed (lastRun cleared) so undo can't double-apply. Handles
+// both the focus-mode change shape (start+end) and any legacy P1 end-only run.
 function undoLastRebalance() {
   const ab = ensureAutobalanceState();
   const run = ab.lastRun;
@@ -1565,11 +1554,24 @@ function undoLastRebalance() {
   run.changes.forEach(ch => {
     const book = BOOK_PROGRESS[ch.bookKey];
     if (!book) { skipped++; return; }
-    const cur = getEndWeek(ch.bookKey);
-    if (cur !== ch.to) { skipped++; return; } // edited since the rebalance — leave it
-    if (ch.from === book.endWeek) delete P.bookEndOverrides[ch.bookKey];
-    else P.bookEndOverrides[ch.bookKey] = ch.from;
-    logScheduleChange(ch.bookKey, 'endWeek', cur, getEndWeek(ch.bookKey), 'autobalance-undo');
+    // Normalize legacy {from,to} (end-only) to the start+end shape.
+    const fromStart = ch.fromStart, toStart = ch.toStart;
+    const fromEnd = ch.fromEnd !== undefined ? ch.fromEnd : ch.from;
+    const toEnd   = ch.toEnd   !== undefined ? ch.toEnd   : ch.to;
+    const hasStart = fromStart !== undefined && toStart !== undefined;
+    // Guard: end must match; if the run moved the start too, that must match as well.
+    if (getEndWeek(ch.bookKey) !== toEnd) { skipped++; return; }
+    if (hasStart && getStartWeek(ch.bookKey) !== toStart) { skipped++; return; }
+    if (hasStart) {
+      const prevStart = getStartWeek(ch.bookKey);
+      if (fromStart === book.startWeek) delete P.bookStartOverrides[ch.bookKey];
+      else P.bookStartOverrides[ch.bookKey] = fromStart;
+      logScheduleChange(ch.bookKey, 'startWeek', prevStart, getStartWeek(ch.bookKey), 'autobalance-undo');
+    }
+    const prevEnd = getEndWeek(ch.bookKey);
+    if (fromEnd === book.endWeek) delete P.bookEndOverrides[ch.bookKey];
+    else P.bookEndOverrides[ch.bookKey] = fromEnd;
+    logScheduleChange(ch.bookKey, 'endWeek', prevEnd, getEndWeek(ch.bookKey), 'autobalance-undo');
     reverted++;
   });
   ab.lastRun = null;
@@ -3098,14 +3100,20 @@ function renderModal() {
       const slipBadge = slip
         ? ` <span class="ab-slip" title="End week pushed outward ${slip.pushes}× before, totaling ${slip.totalWeeks} week${slip.totalWeeks === 1 ? '' : 's'} (from the Schedule Changes log)">↗ slipped ${slip.pushes}× · ${slip.totalWeeks}w</span>`
         : '';
+      // P2 #2.3 focus: a book may have its START slid (deferred) as well as its
+      // end. Show the start line only when it moved; badge active→future defers.
+      const deferBadge = ch.deferred ? ` <span class="ab-defer" title="Paused now, resumes later so higher-priority books finish first">⏸ deferred</span>` : '';
+      const startLine = (ch.toStart !== ch.fromStart)
+        ? `<div class="ab-diff-meta">starts ${weekLabel(ch.fromStart)} → <strong>${weekLabel(ch.toStart)}</strong></div>` : '';
       return `
         <div class="ab-diff-row">
           <label class="ab-lock" title="Lock: never move this book (persists after Apply)">
             <input type="checkbox" data-ab-lock="${escapeHtml(ch.bookKey)}">🔒
           </label>
           <div class="ab-diff-main">
-            <div class="ab-diff-title"><span class="dot" style="background:${dotColor};"></span>${escapeHtml(ch.title)} <span class="ab-tier">${TIER[ch.tier] || ''}</span>${slipBadge}</div>
-            <div class="ab-diff-meta">${ch.remaining} pp left · ${weekLabel(ch.from)} → <strong>${weekLabel(ch.to)}</strong> (+${ch.deltaWeeks} wk) · ~${ch.oldRate} → <strong>~${ch.newRate} pp/wk</strong></div>
+            <div class="ab-diff-title"><span class="dot" style="background:${dotColor};"></span>${escapeHtml(ch.title)} <span class="ab-tier">${TIER[ch.tier] || ''}</span>${deferBadge}${slipBadge}</div>
+            ${startLine}
+            <div class="ab-diff-meta">${ch.remaining} pp left · ends ${weekLabel(ch.fromEnd)} → <strong>${weekLabel(ch.toEnd)}</strong> · ~${ch.newRate} pp/wk while active</div>
           </div>
         </div>`;
     }).join('');

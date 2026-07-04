@@ -826,6 +826,13 @@ body.mobile-active .stale-week-banner { flex-wrap: wrap; font-size: 10px; paddin
   background: rgba(251, 191, 36, 0.10);
   padding: 1px 5px; border-radius: 3px; white-space: nowrap;
 }
+/* P2 #2.3: deferred (paused) badge in focus-mode diff rows */
+.ab-defer {
+  font-family: 'DM Mono', monospace; font-size: 9px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.15);
+  padding: 1px 5px; border-radius: 3px; white-space: nowrap;
+}
 
 /* ── Intake modal: media-type pills ── */
 .media-pills {

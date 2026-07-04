@@ -458,6 +458,28 @@ function getMeasuredCapacity() {
   return { value, weeksUsed: qualifying.length, low: value < 25 };
 }
 
+// P2 #2.2: chronic-slip stats — how often a book's END week has been pushed
+// OUTWARD, mined from the P4 #14 schedule audit log. This is the signal that
+// audit trail was built to surface: a book you keep deferring. Counts
+// outward endWeek moves (delta > 0) across all sources (manual + autobalance);
+// inward moves (undo, pull-ins) don't count as slip. Returns null when the
+// book has never slipped so callers can render nothing.
+function getBookSlipStats(bookKey) {
+  let pushes = 0, totalWeeks = 0, lastTs = null;
+  (P.scheduleLog || []).forEach(e => {
+    if (!e || e.bookKey !== bookKey || e.field !== 'endWeek') return;
+    const from = weekIdx(e.from), to = weekIdx(e.to);
+    if (from === null || to === null) return;
+    const delta = to - from;
+    if (delta > 0) {
+      pushes++;
+      totalWeeks += delta;
+      if (lastTs === null || e.ts > lastTs) lastTs = e.ts;
+    }
+  });
+  return pushes > 0 ? { pushes, totalWeeks, lastTs } : null;
+}
+
 function getStreakDays() {
   if (P.sessions.length === 0) return 0;
   const dayKeys = new Set(P.sessions.map(s => localDayKey(s.ts)));
@@ -2835,6 +2857,7 @@ function renderModal() {
             <div>Start default: ${escapeHtml(book.startWeek)}${startOverridden ? ` → <span style="color:var(--accent-warn);">${escapeHtml(startWeek)}</span>` : ''}</div>
             <div>End default: ${escapeHtml(book.endWeek)}${endOverridden ? ` → <span style="color:var(--accent-warn);">${escapeHtml(endWeek)}</span>` : ''}</div>
             ${noteOverridden ? `<div>Note default: ${escapeHtml(defaultNote || '(none)')} → <span style="color:var(--accent-warn);">${escapeHtml(liveNote || '(empty)')}</span></div>` : ''}
+            ${(() => { const s = getBookSlipStats(k); return s ? `<div style="margin-top:4px;color:var(--accent-warn);" title="From the Schedule Changes audit log">↗ End pushed ${s.pushes}× before · ${s.totalWeeks} wk total slip</div>` : ''; })()}
           </div>
           ${anyOverride ? `<button type="button" class="btn btn-small btn-ghost" id="edit-reset" data-book="${k}" title="Clear start, end, and note overrides">↺ Reset to default</button>` : ''}
         </div>
@@ -3051,13 +3074,19 @@ function renderModal() {
 
     const diffRows = plan.changes.map(ch => {
       const dotColor = `var(--t${+ch.topic || 2})`;
+      // P2 #2.2: flag books that already have a history of being pushed out —
+      // "this one chronically slips" is exactly what the audit log is for.
+      const slip = getBookSlipStats(ch.bookKey);
+      const slipBadge = slip
+        ? ` <span class="ab-slip" title="End week pushed outward ${slip.pushes}× before, totaling ${slip.totalWeeks} week${slip.totalWeeks === 1 ? '' : 's'} (from the Schedule Changes log)">↗ slipped ${slip.pushes}× · ${slip.totalWeeks}w</span>`
+        : '';
       return `
         <div class="ab-diff-row">
           <label class="ab-lock" title="Lock: never move this book (persists after Apply)">
             <input type="checkbox" data-ab-lock="${escapeHtml(ch.bookKey)}">🔒
           </label>
           <div class="ab-diff-main">
-            <div class="ab-diff-title"><span class="dot" style="background:${dotColor};"></span>${escapeHtml(ch.title)} <span class="ab-tier">${TIER[ch.tier] || ''}</span></div>
+            <div class="ab-diff-title"><span class="dot" style="background:${dotColor};"></span>${escapeHtml(ch.title)} <span class="ab-tier">${TIER[ch.tier] || ''}</span>${slipBadge}</div>
             <div class="ab-diff-meta">${ch.remaining} pp left · ${weekLabel(ch.from)} → <strong>${weekLabel(ch.to)}</strong> (+${ch.deltaWeeks} wk) · ~${ch.oldRate} → <strong>~${ch.newRate} pp/wk</strong></div>
           </div>
         </div>`;

@@ -819,6 +819,14 @@ body.mobile-active .stale-week-banner { flex-wrap: wrap; font-size: 10px; paddin
 .ab-undo-row strong { color: var(--text-primary); }
 .ab-undo-row .btn { flex: none; }
 
+/* P2 #2.2: chronic-slip badge in the autobalance diff rows */
+.ab-slip {
+  font-family: 'DM Mono', monospace; font-size: 9px;
+  color: var(--accent-warn);
+  background: rgba(251, 191, 36, 0.10);
+  padding: 1px 5px; border-radius: 3px; white-space: nowrap;
+}
+
 /* ── Intake modal: media-type pills ── */
 .media-pills {
   display: grid;

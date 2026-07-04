@@ -103,24 +103,34 @@ const DEFAULT_PERSISTENT = {
 
 let P = loadPersistent();
 
+// P2 #2.4 review / roadmap 3.8: per-field normalization, extracted so EVERY
+// path that rebuilds P from untrusted JSON runs it — not just localStorage.
+// pullFromGist and importState previously did {...cloneDefault(), ...remote}
+// with no re-normalization, so a malformed/hand-edited/older-schema remote
+// (e.g. bookStartOverrides:null, sessions as a string) could land in P and
+// crash the next render(). Mutates and returns `merged`.
+function normalizePersistent(merged) {
+  if (!merged || typeof merged !== 'object') return cloneDefault();
+  if (!merged.bookProgress || typeof merged.bookProgress !== 'object') merged.bookProgress = {};
+  if (!merged.bookStartOverrides || typeof merged.bookStartOverrides !== 'object') merged.bookStartOverrides = {};
+  if (!merged.bookEndOverrides || typeof merged.bookEndOverrides !== 'object') merged.bookEndOverrides = {};
+  if (!merged.bookCompleted || typeof merged.bookCompleted !== 'object') merged.bookCompleted = {};
+  if (!merged.deliverablesDone || typeof merged.deliverablesDone !== 'object') merged.deliverablesDone = {};
+  if (!Array.isArray(merged.sessions)) merged.sessions = [];
+  if (!Array.isArray(merged.leverageLog)) merged.leverageLog = [];
+  if (!Array.isArray(merged.scheduleLog)) merged.scheduleLog = [];
+  if (!merged.customNotes || typeof merged.customNotes !== 'object') merged.customNotes = {};
+  if (!merged.autobalance || typeof merged.autobalance !== 'object') merged.autobalance = cloneDefault().autobalance;
+  if (!merged.sync || typeof merged.sync !== 'object') merged.sync = cloneDefault().sync;
+  return merged;
+}
+
 function loadPersistent() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return cloneDefault();
     const parsed = JSON.parse(raw);
-    const merged = {...cloneDefault(), ...parsed};
-    if (!merged.bookProgress || typeof merged.bookProgress !== 'object') merged.bookProgress = {};
-    if (!merged.bookStartOverrides || typeof merged.bookStartOverrides !== 'object') merged.bookStartOverrides = {};
-    if (!merged.bookEndOverrides || typeof merged.bookEndOverrides !== 'object') merged.bookEndOverrides = {};
-    if (!merged.bookCompleted || typeof merged.bookCompleted !== 'object') merged.bookCompleted = {};
-    if (!merged.deliverablesDone || typeof merged.deliverablesDone !== 'object') merged.deliverablesDone = {};
-    if (!Array.isArray(merged.sessions)) merged.sessions = [];
-    if (!Array.isArray(merged.leverageLog)) merged.leverageLog = [];
-    if (!Array.isArray(merged.scheduleLog)) merged.scheduleLog = [];
-    if (!merged.customNotes || typeof merged.customNotes !== 'object') merged.customNotes = {};
-    if (!merged.autobalance || typeof merged.autobalance !== 'object') merged.autobalance = cloneDefault().autobalance;
-    if (!merged.sync || typeof merged.sync !== 'object') merged.sync = cloneDefault().sync;
-    return merged;
+    return normalizePersistent({...cloneDefault(), ...parsed});
   } catch (e) {
     console.warn("Failed to load state:", e);
     return cloneDefault();
@@ -253,7 +263,11 @@ function isWeekStale() {
 function getAutobalanceConfig() {
   const d = cloneDefault().autobalance;
   const raw = (P.autobalance && typeof P.autobalance === 'object') ? P.autobalance : {};
+  // Spread raw FIRST so unknown fields written by a newer client survive this
+  // round-trip (ensureAutobalanceState replaces P.autobalance with this result
+  // and it gets synced), then normalize the known fields on top.
   return {
+    ...raw,
     capacityMode: raw.capacityMode === 'manual' ? 'manual' : d.capacityMode,
     manualCapacity: (typeof raw.manualCapacity === 'number' && isFinite(raw.manualCapacity) && raw.manualCapacity > 0)
       ? raw.manualCapacity : d.manualCapacity,
@@ -459,26 +473,32 @@ function getMeasuredCapacity() {
   return { value, weeksUsed: qualifying.length, low: value < 25 };
 }
 
-// P2 #2.2: chronic-slip stats — how often a book's END week has been pushed
-// OUTWARD, mined from the P4 #14 schedule audit log. This is the signal that
-// audit trail was built to surface: a book you keep deferring. Counts
-// outward endWeek moves (delta > 0) across all sources (manual + autobalance);
-// inward moves (undo, pull-ins) don't count as slip. Returns null when the
-// book has never slipped so callers can render nothing.
+// P2 #2.2: chronic-slip stats — how far a book's END has drifted PAST its
+// data.js default, and how often it's been pushed. The signal the P4 #14 audit
+// trail was built to surface: a book you keep deferring.
+//
+// `totalWeeks` is the NET current drift (live end − default end), not a sum of
+// historical pushes — so a push that was later undone or pulled back nets out
+// and the book stops reporting slip once it's at/before its default (this is
+// what keeps undo (2.1) from inflating the badge). `pushes` counts outward
+// endWeek moves excluding 'autobalance-undo' entries, gated on the book still
+// being net-behind. Returns null when the live end is at or before default.
 function getBookSlipStats(bookKey) {
-  let pushes = 0, totalWeeks = 0, lastTs = null;
+  const book = BOOK_PROGRESS[bookKey];
+  if (!book) return null;
+  const liveEnd = weekIdx(getEndWeek(bookKey));
+  const defEnd  = weekIdx(book.endWeek);
+  if (liveEnd === null || defEnd === null) return null;
+  const totalWeeks = liveEnd - defEnd;
+  if (totalWeeks <= 0) return null; // at/before default — not currently slipping
+  let pushes = 0, lastTs = null;
   (P.scheduleLog || []).forEach(e => {
-    if (!e || e.bookKey !== bookKey || e.field !== 'endWeek') return;
+    if (!e || e.bookKey !== bookKey || e.field !== 'endWeek' || e.source === 'autobalance-undo') return;
     const from = weekIdx(e.from), to = weekIdx(e.to);
     if (from === null || to === null) return;
-    const delta = to - from;
-    if (delta > 0) {
-      pushes++;
-      totalWeeks += delta;
-      if (lastTs === null || e.ts > lastTs) lastTs = e.ts;
-    }
+    if (to - from > 0) { pushes++; if (lastTs === null || e.ts > lastTs) lastTs = e.ts; }
   });
-  return pushes > 0 ? { pushes, totalWeeks, lastTs } : null;
+  return { pushes: Math.max(1, pushes), totalWeeks, lastTs };
 }
 
 function getStreakDays() {
@@ -534,7 +554,7 @@ function importState(file) {
     try {
       const parsed = JSON.parse(e.target.result);
       const preservedSync = P.sync;
-      P = {...cloneDefault(), ...parsed, sync: preservedSync};
+      P = normalizePersistent({...cloneDefault(), ...parsed, sync: preservedSync});
       savePersistent();
       render();
       toast('State imported');
@@ -727,7 +747,9 @@ async function pullFromGist() {
     const stateContent = await readFile(stateFile);
     const remote = JSON.parse(stateContent);
     const preservedSync = P.sync;
-    P = {...cloneDefault(), ...remote, sync: preservedSync};
+    // Normalize the remote just like localStorage — a malformed gist must not
+    // land null/typo'd fields into P and crash the next render().
+    P = normalizePersistent({...cloneDefault(), ...remote, sync: preservedSync});
     P.sync.lastPullAt = Date.now();
     // P2 #2.4: record the remote's updated_at as the new conflict baseline —
     // we're now in sync with it, so the next push compares against this.
@@ -1386,6 +1408,15 @@ function computeRebalancePlan(opts) {
   const laneRate = Math.max(1, Math.floor(capacity / 2));
 
   const changes = [], unresolved = [], unchanged = [];
+  // Projected This Week demand AFTER applying, computed with the SAME
+  // spread-to-end model + active predicate as getWeeklyDemand / the This Week
+  // pill (ceil(remaining / (end − today + 1)) over books whose start ≤ today).
+  // This is what the pill will show post-apply, so the footer's before→after
+  // is apples-to-apples and matches reality — deferred books drop out here
+  // because their start moves into the future (they stop being "active").
+  let afterDemand = 0;
+  const projectDemand = (remaining, endIdx) => Math.ceil(remaining / Math.max(1, endIdx - cIdx + 1));
+  locked.forEach(x => { if (x.sIdx <= cIdx) afterDemand += projectDemand(x.remaining, x.eIdx); });
   schedulable.forEach(x => {
     const earliest = Math.max(cIdx, x.sIdx); // never before today or its planned start
     const rate = Math.min(x.remaining, laneRate);
@@ -1419,6 +1450,7 @@ function computeRebalancePlan(opts) {
     }
     for (let t = readFrom; t <= eFinal; t++) load[t] += placedRate;
     const sFinal = (x.sIdx <= cIdx && readFrom <= cIdx) ? x.sIdx : readFrom;
+    if (sFinal <= cIdx) afterDemand += projectDemand(x.remaining, eFinal); // still active post-apply
 
     const startMoved = sFinal !== x.sIdx;
     const endMoved   = eFinal !== x.eIdx;
@@ -1440,20 +1472,24 @@ function computeRebalancePlan(opts) {
     }
   });
 
-  // Peak committed week — surfaced so the modal can flag any week that runs
-  // hot (only possible via pins or an unresolved fallback).
-  let peakLoad = 0, peakIdx = cIdx;
+  // Peak committed week + count of weeks running over capacity. Only the
+  // unresolved fallback (or pins) can push weeks hot; when it happens it can be
+  // MANY weeks, not just the peak, so surface the count too (honest — the
+  // fallback comment used to imply peakWeek covered it).
+  let peakLoad = 0, peakIdx = cIdx, hotWeeks = 0;
   for (let t = cIdx; t <= MAX_WEEK_IDX; t++) {
     if (load[t] > peakLoad) { peakLoad = load[t]; peakIdx = t; }
+    if (load[t] > capacity + EPS) hotWeeks++;
   }
 
   return {
     changes, unresolved, markDone, invalid, unchanged,
     locked: locked.map(x => ({ bookKey: x.k, title: x.b.title || x.k })),
     before: getWeeklyDemand().total,
-    after: Math.round(load[cIdx]),
+    after: afterDemand, // projected This Week pill value (matches post-apply)
     peakWeekLoad: Math.round(peakLoad),
     peakWeek: idxToWeekKey(peakIdx),
+    hotWeeks,
     capacity, capacitySource,
     asOf: CURRENT_WEEK_KEY,
   };
@@ -1553,7 +1589,7 @@ function undoLastRebalance() {
   let reverted = 0, skipped = 0;
   run.changes.forEach(ch => {
     const book = BOOK_PROGRESS[ch.bookKey];
-    if (!book) { skipped++; return; }
+    if (!book || isBookComplete(ch.bookKey)) { skipped++; return; } // symmetry with apply
     // Normalize legacy {from,to} (end-only) to the start+end shape.
     const fromStart = ch.fromStart, toStart = ch.toStart;
     const fromEnd = ch.fromEnd !== undefined ? ch.fromEnd : ch.from;
@@ -3098,13 +3134,16 @@ function renderModal() {
       // "this one chronically slips" is exactly what the audit log is for.
       const slip = getBookSlipStats(ch.bookKey);
       const slipBadge = slip
-        ? ` <span class="ab-slip" title="End week pushed outward ${slip.pushes}× before, totaling ${slip.totalWeeks} week${slip.totalWeeks === 1 ? '' : 's'} (from the Schedule Changes log)">↗ slipped ${slip.pushes}× · ${slip.totalWeeks}w</span>`
+        ? ` <span class="ab-slip" title="Its end is currently ${slip.totalWeeks} week${slip.totalWeeks === 1 ? '' : 's'} past the data.js default, across ${slip.pushes} push${slip.pushes === 1 ? '' : 'es'} (from the Schedule Changes log)">↗ slipped ${slip.pushes}× · ${slip.totalWeeks}w</span>`
         : '';
-      // P2 #2.3 focus: a book may have its START slid (deferred) as well as its
-      // end. Show the start line only when it moved; badge active→future defers.
+      // P2 #2.3 focus: a book may have its START slid (deferred) and/or its end
+      // moved. Show each line only when that field actually changed, so a
+      // deferred-only row doesn't render a redundant "ends X → X".
       const deferBadge = ch.deferred ? ` <span class="ab-defer" title="Paused now, resumes later so higher-priority books finish first">⏸ deferred</span>` : '';
       const startLine = (ch.toStart !== ch.fromStart)
         ? `<div class="ab-diff-meta">starts ${weekLabel(ch.fromStart)} → <strong>${weekLabel(ch.toStart)}</strong></div>` : '';
+      const endLine = (ch.toEnd !== ch.fromEnd)
+        ? `ends ${weekLabel(ch.fromEnd)} → <strong>${weekLabel(ch.toEnd)}</strong> · ` : '';
       return `
         <div class="ab-diff-row">
           <label class="ab-lock" title="Lock: never move this book (persists after Apply)">
@@ -3113,7 +3152,7 @@ function renderModal() {
           <div class="ab-diff-main">
             <div class="ab-diff-title"><span class="dot" style="background:${dotColor};"></span>${escapeHtml(ch.title)} <span class="ab-tier">${TIER[ch.tier] || ''}</span>${deferBadge}${slipBadge}</div>
             ${startLine}
-            <div class="ab-diff-meta">${ch.remaining} pp left · ends ${weekLabel(ch.fromEnd)} → <strong>${weekLabel(ch.toEnd)}</strong> · ~${ch.newRate} pp/wk while active</div>
+            <div class="ab-diff-meta">${ch.remaining} pp left · ${endLine}~${ch.newRate} pp/wk while active</div>
           </div>
         </div>`;
     }).join('');
@@ -3132,7 +3171,7 @@ function renderModal() {
     plan.unresolved.forEach(u => warnings.push(`<strong>${escapeHtml(u.title)}</strong> doesn't fit by Jun 2027 — needs ~${u.needsPagesPerWeek} pp/wk you don't have. Cut scope, raise capacity, or unpin something.`));
     plan.markDone.forEach(m => warnings.push(`<strong>${escapeHtml(m.title)}</strong> has 0 pages left — mark it done instead (checkbox stays the source of truth).`));
     plan.invalid.forEach(i => warnings.push(`<strong>${escapeHtml(i.title)}</strong> has invalid scheduling and was excluded.`));
-    if (plan.peakWeekLoad > abCapacity) warnings.push(`Peak week ~${plan.peakWeekLoad} pp (${weekLabel(plan.peakWeek)}) — unmovable books overlap there; the weekly re-check will pick it up.`);
+    if (plan.peakWeekLoad > abCapacity) warnings.push(`Peak week ~${plan.peakWeekLoad} pp (${weekLabel(plan.peakWeek)})${plan.hotWeeks > 1 ? ` and ${plan.hotWeeks - 1} other week${plan.hotWeeks - 1 === 1 ? '' : 's'} run over ${abCapacity} pp/wk` : ' runs hot'} — from the books that don't fit above. Cut scope or raise capacity.`);
     if (P.sync.gistId) warnings.push(`Multi-device sync is on — Pull latest before applying if you've edited elsewhere.`);
 
     // P2 #2.1: one-click revert of the most recent apply.

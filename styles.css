@@ -793,6 +793,20 @@ body.mobile-active .form-group .form-help:has(strong) { display: block; }
 .draft-banner strong { color: var(--accent-warn); }
 body.mobile-active .draft-banner { flex-wrap: wrap; font-size: 10px; padding: 8px 10px; }
 
+/* P2 #2.6: stale-week warning — tab open across a week boundary */
+.stale-week-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 12px; padding: 9px 13px;
+  background: rgba(239, 68, 68, 0.10);
+  border-left: 3px solid var(--accent-bad);
+  border-radius: 0 4px 4px 0;
+  font-size: 11px; line-height: 1.4;
+  color: var(--text-secondary);
+}
+.stale-week-banner strong { color: var(--text-primary); }
+.stale-week-banner .btn { flex: none; }
+body.mobile-active .stale-week-banner { flex-wrap: wrap; font-size: 10px; padding: 8px 10px; }
+
 /* ── Intake modal: media-type pills ── */
 .media-pills {
   display: grid;

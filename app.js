@@ -230,6 +230,19 @@ function idxToWeekKey(idx) {
   return weekKey(m, w);
 }
 
+// The curriculum "now" (CURRENT_MONTH_IDX / CURRENT_WEEK_OF_MONTH / CURRENT_WEEK_KEY)
+// is frozen in data.js at page load. A tab left open across a week boundary
+// therefore shows stale pacing everywhere. P2 #2.6: detect that drift so the
+// UI can prompt a reload; the autobalance apply path uses the same check to
+// abort a write against a phantom week.
+function liveWeekIdx() {
+  const d = new Date();
+  return dateToMonthIdx(d) * 4 + dateToWeekOfMonth(d);
+}
+function isWeekStale() {
+  return liveWeekIdx() !== CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH;
+}
+
 // ── AUTOBALANCE STATE ACCESSORS (P1 #1.1) ──
 // pullFromGist and importState rebuild P via {...cloneDefault(), ...parsed}
 // WITHOUT the per-field type guards in loadPersistent, so a malformed remote
@@ -1036,6 +1049,12 @@ function render() {
     applyMobileBodyClasses();
     const a = document.getElementById("app");
     a.innerHTML = `
+      ${isWeekStale() ? `
+        <div class="stale-week-banner">
+          <span>⏳ This tab has been open since <strong>${escapeHtml(weekLabel(CURRENT_WEEK_KEY))}</strong> — the calendar has moved to <strong>${escapeHtml(weekLabel(idxToWeekKey(liveWeekIdx())))}</strong>. Pacing and due-date math are stale.</span>
+          <button class="btn btn-small" id="stale-reload">↻ Reload</button>
+        </div>
+      ` : ''}
       <div class="header">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
           <div style="flex:1;min-width:0;">
@@ -1452,9 +1471,8 @@ function applyRebalancePlan(plan, prefs) {
   // Week-drift abort: the plan was computed against the page-load week
   // anchor (CURRENT_* frozen in data.js). If the real week rolled over while
   // the tab sat open, every pace number on screen is stale — reload rather
-  // than write against a phantom week.
-  const now = new Date();
-  if (dateToMonthIdx(now) * 4 + dateToWeekOfMonth(now) !== CURRENT_MONTH_IDX * 4 + CURRENT_WEEK_OF_MONTH) {
+  // than write against a phantom week. (P2 #2.6: same check the banner uses.)
+  if (isWeekStale()) {
     toast('Week changed since page load — reload before applying', true);
     return;
   }
@@ -3162,6 +3180,10 @@ function bind() {
         S.topicFilterOpen = topicDetails.open;
       });
     }
+    // P2 #2.6: stale-week reload
+    const staleReload = document.getElementById('stale-reload');
+    if (staleReload) staleReload.addEventListener('click', () => location.reload());
+
     // Date navigation
     const dnPrev = document.getElementById('dn-prev');
     if (dnPrev) dnPrev.addEventListener('click', () => { shiftViewingDate(-1); render(); });
@@ -3706,5 +3728,17 @@ try {
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
     resizeRaf = requestAnimationFrame(applyMobileBodyClasses);
   }, { passive: true });
+} catch (_) {}
+// P2 #2.6: when a long-lived tab regains focus, re-render so the stale-week
+// banner surfaces the moment the calendar has drifted past the frozen anchor.
+// Cheap (one integer compare); only re-renders when the state actually flips.
+try {
+  let _wasStale = isWeekStale();
+  const checkStale = () => {
+    const nowStale = isWeekStale();
+    if (nowStale !== _wasStale) { _wasStale = nowStale; render(); }
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkStale(); });
+  window.addEventListener('focus', checkStale);
 } catch (_) {}
 render();

@@ -807,6 +807,18 @@ body.mobile-active .draft-banner { flex-wrap: wrap; font-size: 10px; padding: 8p
 .stale-week-banner .btn { flex: none; }
 body.mobile-active .stale-week-banner { flex-wrap: wrap; font-size: 10px; padding: 8px 10px; }
 
+/* P2 #2.1: undo-last-rebalance row inside the autobalance modal */
+.ab-undo-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 12px; padding: 8px 12px;
+  background: var(--bg-card);
+  border-left: 3px solid var(--text-muted);
+  border-radius: 0 4px 4px 0;
+  font-size: 11px; line-height: 1.4; color: var(--text-secondary);
+}
+.ab-undo-row strong { color: var(--text-primary); }
+.ab-undo-row .btn { flex: none; }
+
 /* ── Intake modal: media-type pills ── */
 .media-pills {
   display: grid;

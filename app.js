@@ -1509,6 +1509,38 @@ function applyRebalancePlan(plan, prefs) {
   toast(parts.join(' · '));
 }
 
+// ── AUTOBALANCE UNDO (P2 #2.1) ──
+// Reverse the most recent apply through the SAME write path: restore each
+// book's end to its pre-rebalance value (delete-when-equal-to-default so drift
+// badges stay truthful), audit-tagged 'autobalance-undo'. Per-change guard:
+// only revert a book whose end is still where the rebalance left it, so a
+// manual edit made after the rebalance is respected, not clobbered. The run
+// is consumed (lastRun cleared) so undo can't double-apply.
+function undoLastRebalance() {
+  const ab = ensureAutobalanceState();
+  const run = ab.lastRun;
+  if (!run || !Array.isArray(run.changes) || run.changes.length === 0) { toast('Nothing to undo'); return; }
+  if (isWeekStale()) { toast('Week changed since page load — reload before undoing', true); return; }
+  let reverted = 0, skipped = 0;
+  run.changes.forEach(ch => {
+    const book = BOOK_PROGRESS[ch.bookKey];
+    if (!book) { skipped++; return; }
+    const cur = getEndWeek(ch.bookKey);
+    if (cur !== ch.to) { skipped++; return; } // edited since the rebalance — leave it
+    if (ch.from === book.endWeek) delete P.bookEndOverrides[ch.bookKey];
+    else P.bookEndOverrides[ch.bookKey] = ch.from;
+    logScheduleChange(ch.bookKey, 'endWeek', cur, getEndWeek(ch.bookKey), 'autobalance-undo');
+    reverted++;
+  });
+  ab.lastRun = null;
+  ab.lastRunTs = null;
+  savePersistent();
+  closeModal();
+  const parts = [`↺ Reverted ${reverted} ${reverted === 1 ? 'book' : 'books'}`];
+  if (skipped) parts.push(`${skipped} skipped (changed since)`);
+  toast(parts.join(' · '));
+}
+
 function renderThisWeek() {
   // Reading progress for current week (P1 #1.2: shared predicate)
   const activeBooks = getActiveBookEntries();
@@ -3046,10 +3078,19 @@ function renderModal() {
     plan.markDone.forEach(m => warnings.push(`<strong>${escapeHtml(m.title)}</strong> has 0 pages left — mark it done instead (checkbox stays the source of truth).`));
     plan.invalid.forEach(i => warnings.push(`<strong>${escapeHtml(i.title)}</strong> has invalid scheduling and was excluded.`));
     if (plan.peakWeekLoad > abCapacity) warnings.push(`Peak week ~${plan.peakWeekLoad} pp (${weekLabel(plan.peakWeek)}) — unmovable books overlap there; the weekly re-check will pick it up.`);
-    if (plan.changes.some(ch => +ch.to.split('-W')[0] > 5)) warnings.push(`Some new end dates fall after Oct 2026 — the Week-zoom Gantt currently shows only the first 6 months (roadmap 2.5).`);
     if (P.sync.gistId) warnings.push(`Multi-device sync is on — Pull latest before applying if you've edited elsewhere.`);
 
+    // P2 #2.1: one-click revert of the most recent apply.
+    const lastRun = getAutobalanceConfig().lastRun;
+    const undoRow = (lastRun && Array.isArray(lastRun.changes) && lastRun.changes.length)
+      ? `<div class="ab-undo-row">
+          <span>↺ Last rebalance moved <strong>${lastRun.changes.length}</strong> book${lastRun.changes.length === 1 ? '' : 's'}${lastRun.ts ? ` on ${new Date(lastRun.ts).toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : ''}.</span>
+          <button class="btn btn-small btn-ghost" id="ab-undo">Undo</button>
+        </div>`
+      : '';
+
     body = `
+      ${undoRow}
       <div class="form-group">
         <label class="form-label">Weekly capacity (pages/week)</label>
         <div style="display:flex;gap:10px;align-items:flex-start;">
@@ -3598,6 +3639,11 @@ function bind() {
         ctx.capacityMode = 'auto';
         ctx.capacityInput = (ctx.measured && ctx.measured.value != null) ? ctx.measured.value : 120;
         render();
+      });
+      const abUndo = document.getElementById('ab-undo');
+      if (abUndo) abUndo.addEventListener('click', () => {
+        try { undoLastRebalance(); }
+        catch (e) { console.error('autobalance undo error:', e); toast('Undo failed', true); }
       });
       document.querySelectorAll('[data-ab-lock]').forEach(el => {
         el.addEventListener('change', () => {

@@ -2247,9 +2247,23 @@ function monthlyGantt(fT) {
 
 function weeklyGantt(fT) {
   try {
-    // 6 months × 4 weeks = 24 columns
+    // P2 #2.5: dynamic month window instead of a hardcoded 6-month cap. Span
+    // from curriculum start (month 0) through the last month with content for
+    // the filtered topics — declared t.mo / sub-topic mo, plus live book
+    // schedules when the overlay is on (this is what surfaces rebalanced ends
+    // pushed past Oct 2026, which the old m<6 cap silently clipped). Floor of
+    // 5 keeps the original ≥6-month width; ceiling 13 is the domain end.
+    let maxM = 5;
+    const bumpMax = m => { if (Number.isInteger(m) && m > maxM) maxM = m; };
+    fT.forEach(t => {
+      if (!t) return;
+      (Array.isArray(t.mo) ? t.mo : []).forEach(bumpMax);
+      (Array.isArray(t.subs) ? t.subs : []).forEach(s => (Array.isArray(s && s.mo) ? s.mo : []).forEach(bumpMax));
+      if (S.bookOverlay) getTopicBookActiveWeekKeys(t.id).forEach(wk => bumpMax(+wk.split('-W')[0]));
+    });
+    maxM = Math.min(13, Math.max(5, maxM));
     let weeks = [];
-    for (let m = 0; m < 6; m++) for (let w = 1; w <= 4; w++) weeks.push({m, w});
+    for (let m = 0; m <= maxM; m++) for (let w = 1; w <= 4; w++) weeks.push({m, w});
 
     const extraCols = [];
     if (S.detail >= 2) extraCols.push('Sub');

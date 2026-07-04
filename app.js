@@ -97,6 +97,7 @@ const DEFAULT_PERSISTENT = {
     lastPullAt: null,
     lastError: null,    // last error message, if any
     status: 'idle',     // 'idle' | 'syncing' | 'error'
+    lastKnownUpdatedAt: null, // P2 #2.4: remote gist updated_at as of our last push/pull — conflict baseline
   },
 };
 
@@ -663,6 +664,18 @@ async function pushToGist() {
     };
     let result;
     if (P.sync.gistId) {
+      // P2 #2.4: conflict guard. A blind PATCH is last-writer-wins — if
+      // another device pushed since we last synced, it would silently clobber
+      // that write. Compare the remote's updated_at against our baseline and
+      // refuse rather than overwrite. Null baseline = first push after connect
+      // (nothing to compare); auto-sync swallows the throw but the error badge
+      // + message still surface, and local state is never touched.
+      if (P.sync.lastKnownUpdatedAt) {
+        const meta = await gistFetch(`https://api.github.com/gists/${P.sync.gistId}`);
+        if (meta && meta.updated_at && meta.updated_at !== P.sync.lastKnownUpdatedAt) {
+          throw new Error('Remote changed on another device — Pull before pushing (your local changes are safe)');
+        }
+      }
       // Update existing
       result = await gistFetch(`https://api.github.com/gists/${P.sync.gistId}`, {
         method: 'PATCH',
@@ -676,6 +689,7 @@ async function pushToGist() {
       });
       P.sync.gistId = result.id;
     }
+    if (result && result.updated_at) P.sync.lastKnownUpdatedAt = result.updated_at;
     P.sync.lastPushAt = Date.now();
     P.sync.status = 'idle';
     savePersistentLocalOnly();
@@ -715,6 +729,9 @@ async function pullFromGist() {
     const preservedSync = P.sync;
     P = {...cloneDefault(), ...remote, sync: preservedSync};
     P.sync.lastPullAt = Date.now();
+    // P2 #2.4: record the remote's updated_at as the new conflict baseline —
+    // we're now in sync with it, so the next push compares against this.
+    if (data && data.updated_at) P.sync.lastKnownUpdatedAt = data.updated_at;
     P.sync.status = 'idle';
     savePersistentLocalOnly();
 
@@ -750,6 +767,7 @@ async function connectSync(token) {
     lastPullAt: null,
     lastError: null,
     status: 'syncing',
+    lastKnownUpdatedAt: null,
   };
   savePersistentLocalOnly();
   updateSyncBadge();
